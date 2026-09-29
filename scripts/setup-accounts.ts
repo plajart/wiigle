@@ -11,8 +11,8 @@
  * (그 외 모든 계정은 앱이 임의 비밀번호를 부여한다 — scripts/issue-initial-passwords.ts 참고)
  *
  * 하는 일(여러 번 실행해도 결과가 같다):
- *  1. 01035587497 — 이름이 "배병철"인지 확인한 뒤 소유자(owner)로 바꾸고 FIXED_PASSWORD로 설정.
- *       이름이 다르면 아무것도 바꾸지 않고 중단한다(번호가 01035587496이었는지 사용자에게 확인할 것).
+ *  1. 01035587496 — 이름이 "배병철"인지 확인한 뒤 본사(owner, 소유자)로 바꾸고 FIXED_PASSWORD로 설정.
+ *       이름이 다르면 아무것도 바꾸지 않고 중단한다(사람이 확인하기 전까지 변경 없음).
  *  2. 01000000000 — 소유자(owner)로 생성(이미 있으면 소유자로 바꾸고 비밀번호 재설정).
  *  3. 01000000001 — "반들한식뷔페" 고객사의 운영자(admin)로 변경, 비밀번호 설정(없으면 만들지 않고 알림).
  *  4. 01000000002 — "반들한식뷔페" 매장의 매장 관리자(manager)로 변경, 비밀번호 설정(없으면 만들지 않고 알림).
@@ -29,7 +29,7 @@ import bcrypt from "bcryptjs";
 
 const APPLY = process.argv.includes("--apply");
 
-const BAE = { phone: "01035587497", name: "배병철" };
+const BAE = { phone: "01035587496", name: "배병철" };
 const OWNER2 = { phone: "01000000000", name: "소유자" };
 const HQ_ADMIN_PHONE = "01000000001";
 const STORE_MANAGER_PHONE = "01000000002";
@@ -63,7 +63,7 @@ async function main() {
 
   // ── 1. 배병철 → 소유자
   const bae = await users.findOne({ phone: BAE.phone });
-  if (!bae) throw new Error(`계정 ${BAE.phone}이(가) 없습니다 — 아무것도 변경하지 않았습니다(번호가 01035587496이었는지 확인하세요)`);
+  if (!bae) throw new Error(`계정 ${BAE.phone}이(가) 없습니다 — 아무것도 변경하지 않았습니다(번호를 사용자에게 확인하세요)`);
   if (bae.name !== BAE.name) {
     throw new Error(`계정 ${BAE.phone}의 이름이 '${bae.name}'입니다('${BAE.name}'이(가) 아님) — 사람이 확인하기 전까지 아무것도 변경하지 않았습니다`);
   }
