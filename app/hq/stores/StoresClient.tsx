@@ -1,14 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-export default function StoresClient() {
+type Company = { _id: string; name: string };
+
+export default function StoresClient({ isOwner }: { isOwner: boolean }) {
   const [storeName, setStoreName] = useState("");
   const [franchiseCode, setFranchiseCode] = useState("");
   const [adminPhone, setAdminPhone] = useState("");
   const [adminName, setAdminName] = useState("");
   const [createMsg, setCreateMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  // 소유자는 어느 고객사에 만들지 골라야 한다(운영자는 자기 고객사에 자동으로 만들어진다).
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [companyId, setCompanyId] = useState("");
+
+  useEffect(() => {
+    if (!isOwner) return;
+    fetch("/api/v1/owner/companies")
+      .then((r) => r.json())
+      .then((d) => setCompanies(d.companies ?? []));
+  }, [isOwner]);
 
   async function createStore(e: React.FormEvent) {
     e.preventDefault();
@@ -18,7 +30,7 @@ export default function StoresClient() {
       const res = await fetch("/api/v1/stores", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: storeName, franchiseCode, adminPhone, adminName }),
+        body: JSON.stringify({ name: storeName, franchiseCode, adminPhone, adminName, companyId: isOwner ? companyId : undefined }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -41,12 +53,25 @@ export default function StoresClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
+        <div className="eyebrow">{isOwner ? "소유자" : "운영자"}</div>
         <h1>매장 생성</h1>
         <div className="desc">새 매장과 매장 관리자 계정을 함께 생성합니다.</div>
       </div>
       <div className="card">
         <form onSubmit={createStore}>
+          {isOwner && (
+            <div className="field">
+              <label>고객사</label>
+              <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
+                <option value="">선택...</option>
+                {companies.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="field">
             <label>매장명</label>
             <input value={storeName} onChange={(e) => setStoreName(e.target.value)} required />

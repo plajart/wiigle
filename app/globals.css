@@ -493,6 +493,36 @@ main:has(.shell) {
   max-width: 880px;
 }
 
+/* ===== 현재 고객사/매장 표시줄 ===== */
+.context-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: -36px -44px 28px;
+  padding: 12px 44px;
+  background: var(--navy);
+  color: #fff;
+  border-bottom: 3px solid var(--gold);
+}
+.context-bar.warn { background: var(--danger); border-bottom-color: #fff; }
+.context-bar .context-path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.context-bar .context-chip {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  background: rgba(255, 255, 255, 0.12); border-radius: 999px; padding: 5px 14px;
+}
+.context-bar .context-chip.store { background: var(--gold); color: #fff; }
+.context-bar .context-chip .k { font-size: 11px; font-weight: 700; opacity: 0.8; letter-spacing: 0.04em; }
+.context-bar .context-chip .v { font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
+.context-bar .context-sep { opacity: 0.6; font-weight: 700; }
+.context-bar .context-note { font-size: 12px; opacity: 0.85; }
+.context-bar .context-back {
+  margin-left: auto; font-size: 13px; font-weight: 700; color: #fff; text-decoration: underline; white-space: nowrap;
+}
+
 /* ===== 로그인/가입 화면 ===== */
 .auth-shell {
   min-height: calc(100vh - 57px);
@@ -550,6 +580,7 @@ main:has(.shell) {
   .shell-sidebar .nav-item.active { border-left: none; border-bottom-color: var(--gold); }
   .shell-sidebar .sidebar-footer { display: none; }
   .shell-content { padding: 24px 16px 80px; }
+  .context-bar { margin: -24px -16px 20px; padding: 10px 16px; }
   main { padding: 24px 14px 80px; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
 }

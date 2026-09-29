@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-type Store = { _id: string; name: string };
+type Store = { _id: string; name: string; companyName?: string };
 
 export default function VendorClient() {
   const [stores, setStores] = useState<Store[]>([]);
@@ -54,7 +54,7 @@ export default function VendorClient() {
               <option value="">선택하세요</option>
               {stores.map((s) => (
                 <option key={s._id} value={s._id}>
-                  {s.name}
+                  {s.companyName ? `${s.companyName} · ` : ""}{s.name}
                 </option>
               ))}
             </select>

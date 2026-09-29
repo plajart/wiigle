@@ -1,20 +1,43 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { dbConnect } from "@/lib/mongodb";
-import { requireSession, requireCompanyAdmin } from "@/lib/rbac";
+import { requireCompanyAdmin } from "@/lib/rbac";
 import { hashPassword } from "@/lib/auth";
 import { issueDigitalCardNo } from "@/lib/card";
 import Store from "@/lib/models/Store";
+import Company from "@/lib/models/Company";
 import User from "@/lib/models/User";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
 
-export async function GET() {
+// 운영자: 자기 고객사의 매장 목록 / 소유자: 전체(또는 ?companyId= 로 한 고객사만).
+// 예전엔 로그인한 누구에게나 모든 고객사의 매장이 나갔다 — 고객사별로 나눈 뒤로는 범위를 제한한다.
+export async function GET(req: Request) {
   try {
     await dbConnect();
-    await requireSession();
-    const stores = await Store.find().select("name franchiseCode").lean();
-    return NextResponse.json({ stores });
+    const session = await requireCompanyAdmin();
+    const queryCompanyId = new URL(req.url).searchParams.get("companyId");
+
+    let filter: Record<string, unknown> = {};
+    if (session.role === "admin") {
+      filter = { companyId: session.companyAdminOf };
+    } else if (queryCompanyId) {
+      filter = { companyId: queryCompanyId };
+    }
+    const [stores, companies] = await Promise.all([
+      Store.find(filter).select("name franchiseCode companyId").sort({ name: 1 }).lean(),
+      Company.find().select("name").lean(),
+    ]);
+    const nameOf = new Map(companies.map((c) => [String(c._id), c.name]));
+    return NextResponse.json({
+      stores: stores.map((s) => ({
+        _id: String(s._id),
+        name: s.name,
+        franchiseCode: s.franchiseCode,
+        companyId: String(s.companyId),
+        companyName: nameOf.get(String(s.companyId)) ?? "(고객사 없음)",
+      })),
+    });
   } catch (e) {
     return handleApiError(e);
   }
