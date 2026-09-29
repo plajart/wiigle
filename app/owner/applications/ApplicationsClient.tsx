@@ -2,8 +2,11 @@
 
 import { useEffect, useState, useCallback } from "react";
 
+type Company = { _id: string; name: string };
 type Application = {
   _id: string;
+  type?: "NEW_COMPANY" | "ADD_STORE";
+  companyName?: string;
   storeName: string;
   franchiseCode?: string;
   applicantName: string;
@@ -16,11 +19,27 @@ export default function ApplicationsClient() {
   const [apps, setApps] = useState<Application[] | null>(null);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  // 신청별로 "어느 고객사에 붙일지" — "" 이면 새 고객사를 만든다
+  const [target, setTarget] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const res = await fetch("/api/v1/hq/store-applications?all=1");
     const data = await res.json();
-    setApps(data.applications ?? []);
+    const list: Application[] = data.applications ?? [];
+    setApps(list);
+    const cRes = await fetch("/api/v1/owner/companies");
+    const cData = await cRes.json();
+    const cs: Company[] = cRes.ok ? cData.companies : [];
+    setCompanies(cs);
+    // 신청자가 적은 고객사 이름과 같은 기존 고객사가 있으면 기본으로 그 고객사에 붙인다(중복 고객사 생성 방지)
+    setTarget((prev) => {
+      const next = { ...prev };
+      for (const a of list) {
+        if (next[a._id] === undefined) next[a._id] = cs.find((c) => c.name === a.companyName)?._id ?? "";
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -31,12 +50,25 @@ export default function ApplicationsClient() {
     setBusyId(id);
     setMsg(null);
     try {
-      const res = await fetch(`/api/v1/hq/store-applications/${id}/approve`, { method: "POST" });
+      const res = await fetch(`/api/v1/hq/store-applications/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: target[id] || undefined }),
+      });
       const data = await res.json();
       if (!res.ok) {
-        setMsg({ text: `승인 실패: ${data.error}`, ok: false });
+        setMsg({
+          text:
+            data.error === "COMPANY_NAME_EXISTS"
+              ? "같은 이름의 고객사가 이미 있습니다. '기존 고객사에 추가'에서 그 고객사를 선택해 승인하세요."
+              : data.error === "PHONE_ALREADY_USED"
+                ? "이미 가입된 번호입니다."
+                : `승인 실패: ${data.error}`,
+          ok: false,
+        });
+        if (data.error === "COMPANY_NAME_EXISTS" && data.existingCompanyId) setTarget((t) => ({ ...t, [id]: data.existingCompanyId }));
       } else {
-        setMsg({ text: "매장이 생성되고 신청이 승인되었습니다.", ok: true });
+        setMsg({ text: "매장이 등록되고 신청이 승인되었습니다.", ok: true });
         load();
       }
     } finally {
@@ -65,9 +97,12 @@ export default function ApplicationsClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
-        <h1>매장 가입 신청</h1>
-        <div className="desc">매장주가 셀프서비스로 등록 신청한 목록입니다. 승인하면 매장과 매장 관리자 계정이 즉시 생성됩니다.</div>
+        <div className="eyebrow">소유자</div>
+        <h1>고객사·매장 등록 신청</h1>
+        <div className="desc">
+          셀프서비스로 들어온 등록 신청입니다. 승인할 때 <b>새 고객사로 만들지, 기존 고객사에 매장으로 추가할지</b> 고르면 매장과
+          신청자의 매장 관리자 계정이 생성됩니다. 신청자에게 결과가 자동으로 알려지지는 않습니다.
+        </div>
       </div>
 
       {msg && <p className={msg.ok ? "success-msg" : "error"}>{msg.text}</p>}
@@ -83,7 +118,15 @@ export default function ApplicationsClient() {
         {apps?.map((a) => (
           <div className="row" key={a._id} style={{ alignItems: "flex-start" }}>
             <div>
-              <div className="value">{a.storeName}</div>
+              <div className="value">
+                {a.storeName}
+                <span className="badge neutral" style={{ marginLeft: 8 }}>
+                  {a.type === "ADD_STORE" ? "기존 고객사에 추가" : "새 고객사"}
+                </span>
+              </div>
+              <div className="faint" style={{ marginTop: 4 }}>
+                신청한 고객사: <b>{a.companyName ?? "-"}</b>
+              </div>
               <div className="faint" style={{ marginTop: 4 }}>
                 {a.applicantName} · {a.applicantPhone}
                 {a.franchiseCode ? ` · 코드 ${a.franchiseCode}` : ""}
@@ -91,13 +134,27 @@ export default function ApplicationsClient() {
               <div className="faint">{new Date(a.appliedAt).toLocaleString("ko-KR")} 신청</div>
             </div>
             {a.status === "PENDING" ? (
-              <div className="btn-row" style={{ margin: 0, width: 160 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, width: 220 }}>
+                <select
+                  value={target[a._id] ?? ""}
+                  onChange={(e) => setTarget((t) => ({ ...t, [a._id]: e.target.value }))}
+                  style={{ marginBottom: 0 }}
+                >
+                  <option value="">새 고객사 &lsquo;{a.companyName}&rsquo; 만들기</option>
+                  {companies.map((c) => (
+                    <option key={c._id} value={c._id}>
+                      기존 고객사에 추가: {c.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="btn-row" style={{ margin: 0 }}>
                 <button type="button" className="sm gold" disabled={busyId === a._id} onClick={() => approve(a._id)}>
                   승인
                 </button>
                 <button type="button" className="sm secondary" disabled={busyId === a._id} onClick={() => reject(a._id)}>
                   반려
                 </button>
+                </div>
               </div>
             ) : (
               <span className={"badge " + (a.status === "APPROVED" ? "success" : "danger")}>

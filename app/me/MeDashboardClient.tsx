@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from "react";
 
-type Summary = { hq: number; stores: { storeId: string; storeName: string; balance: number }[]; total: number };
+type CompanySummary = {
+  companyId: string;
+  companyName: string;
+  hq: number;
+  stores: { storeId: string; storeName: string; balance: number }[];
+  total: number;
+};
+type Summary = { companies: CompanySummary[] };
 type CardInfo = { cardNo: string; qrDataUrl: string };
 
 export default function MeDashboardClient() {
@@ -52,35 +59,37 @@ export default function MeDashboardClient() {
 
       {!summary && <p className="muted">불러오는 중...</p>}
 
-      {summary && (
-        <>
-          <div className="point-hero">
-            <div className="hero-label">사용 가능한 포인트</div>
-            <div className="hero-value">{summary.total.toLocaleString()}P</div>
-            <div className="hero-sub">어느 매장에서든 통합해서 바로 사용할 수 있는 포인트입니다</div>
+      {summary && summary.companies.length === 0 && (
+        <div className="card">
+          <div className="empty-state">
+            <div className="ic">P</div>
+            아직 적립된 포인트가 없습니다
           </div>
+        </div>
+      )}
 
-          <h2>적립 출처별 내역</h2>
+      {/* 통합포인트는 고객사(본사)별로 따로 쌓이고 그 고객사의 매장들 안에서만 쓸 수 있으므로, 고객사별로 나눠서 보여준다. */}
+      {summary?.companies.map((c) => (
+        <div key={c.companyId}>
+          <div className="point-hero">
+            <div className="hero-label">{c.companyName || "고객사"} · 사용 가능한 통합포인트</div>
+            <div className="hero-value">{c.total.toLocaleString()}P</div>
+            <div className="hero-sub">{c.companyName || "이 고객사"}의 어느 매장에서든 바로 사용할 수 있는 포인트입니다</div>
+          </div>
           <div className="card">
             <div className="row">
-              <span className="label">본사 지급 포인트</span>
-              <span className="value">{summary.hq.toLocaleString()}P</span>
+              <span className="label">통합포인트 지급분</span>
+              <span className="value">{c.hq.toLocaleString()}P</span>
             </div>
-            {summary.stores.length === 0 && (
-              <div className="row">
-                <span className="label">매장 적립 포인트</span>
-                <span className="value faint">보유 매장 없음</span>
-              </div>
-            )}
-            {summary.stores.map((s) => (
+            {c.stores.map((s) => (
               <div className="row" key={s.storeId}>
-                <span className="label">{s.storeName}</span>
+                <span className="label">{s.storeName} 적립</span>
                 <span className="value">{s.balance.toLocaleString()}P</span>
               </div>
             ))}
           </div>
-        </>
-      )}
+        </div>
+      ))}
     </div>
   );
 }

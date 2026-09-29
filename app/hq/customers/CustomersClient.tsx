@@ -39,7 +39,7 @@ export default function CustomersClient() {
       const res = await fetch(`/api/v1/hq/customers/search?phone=${encodeURIComponent(phone)}`);
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error === "CUSTOMER_NOT_FOUND" ? "가입된 고객을 찾을 수 없습니다." : data.error);
+        setError(data.error === "CUSTOMER_NOT_FOUND" ? "이 고객사에서 이용한 고객을 찾을 수 없습니다." : data.error);
         return;
       }
       setCustomer(data);
@@ -54,9 +54,9 @@ export default function CustomersClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
+        <div className="eyebrow">본사 관리모드</div>
         <h1>고객 조회</h1>
-        <div className="desc">전화번호로 고객을 찾아 포인트 현황과 전체 이용내역을 확인합니다.</div>
+        <div className="desc">전화번호로 고객을 찾아 <b>이 고객사에서의</b> 포인트 현황과 이용내역을 확인합니다. 이 고객사에서 이용한 적이 없는 고객은 조회되지 않습니다.</div>
       </div>
 
       <div className="card">
@@ -83,7 +83,7 @@ export default function CustomersClient() {
               <span className="badge gold">{customer.phone}</span>
             </div>
             <div className="row">
-              <span className="label">총 사용 가능 포인트</span>
+              <span className="label">이 고객사의 사용 가능 포인트</span>
               <span className="value" style={{ fontSize: 17, color: "var(--gold-text)" }}>
                 {customer.total.toLocaleString()}P
               </span>
@@ -113,7 +113,7 @@ export default function CustomersClient() {
                   {events.map((ev) => (
                     <tr key={ev._id}>
                       <td className="faint">{new Date(ev.occurredAt).toLocaleString("ko-KR")}</td>
-                      <td>{ev.storeId?.name ?? "본사"}</td>
+                      <td>{ev.storeId?.name ?? "통합포인트"}</td>
                       <td>
                         <span className="badge neutral">{TYPE_LABEL[ev.type] ?? ev.type}</span>
                       </td>

@@ -5,6 +5,7 @@ import { resolveStoreId } from "@/lib/store-context";
 import Store from "@/lib/models/Store";
 import Company from "@/lib/models/Company";
 import Sidebar, { SidebarItem } from "../components/Sidebar";
+import { buildModeLinks } from "../components/modeLinks";
 import ContextBar from "../components/ContextBar";
 
 export default async function StoreLayout({ children }: { children: React.ReactNode }) {
@@ -22,26 +23,25 @@ export default async function StoreLayout({ children }: { children: React.ReactN
   if (!store) redirect(session.role === "manager" ? "/me" : "/hq");
   const company = await Company.findById(store.companyId).select("name").lean();
 
+  // 업무 흐름 순서: 일상 운영(대시보드, 결제, 정산) → 고객 가입 안내 → 연동 설정(동의 → 포스기 설치) → 활동 로그
   const ITEMS: SidebarItem[] = [{ href: "/store", label: "대시보드", icon: "▤" }];
   // 결제 터미널: 매장 관리자, 그리고 슈퍼관리자인 소유자(들어가 있는 매장). 운영자는 결제 화면을 쓰지 않는다.
   if (session.role === "manager" || session.role === "owner") ITEMS.push({ href: "/pos", label: "POS 결제 터미널", icon: "◎" });
   ITEMS.push(
-    { href: "/store/qr", label: "가입 안내 QR", icon: "▦" },
-    { href: "/store/terminals", label: "포스기 다운로드", icon: "⌘" },
     { href: "/store/settlement", label: "일일 정산", icon: "▧" },
+    { href: "/store/qr", label: "가입 안내 QR", icon: "▦" },
     { href: "/store/consent", label: "POS 연동 동의", icon: "⚙" },
+    { href: "/store/terminals", label: "포스기 다운로드", icon: "⌘" },
     { href: "/store/audit-log", label: "연동 활동 로그", icon: "≡" }
   );
 
-  const modeLinks: SidebarItem[] = [{ href: "/me", label: "회원 모드로", icon: "○" }];
-  if (session.role === "owner") modeLinks.push({ href: "/owner", label: "소유자 모드", icon: "★" });
-  if (session.role === "owner" || session.role === "admin") modeLinks.push({ href: "/hq", label: "운영자 모드", icon: "▤" });
+  const modeLinks = buildModeLinks(session, "store");
 
   const viewer = session.role === "owner" ? "소유자" : session.role === "admin" ? "운영자" : null;
 
   return (
     <div className="shell">
-      <Sidebar items={ITEMS} modeLinks={modeLinks} roleLabel="매장 관리자" homeHref="/store" />
+      <Sidebar items={ITEMS} modeLinks={modeLinks} roleLabel="매장" homeHref="/store" />
       <div className="shell-content">
         <ContextBar
           companyName={company?.name ?? "(고객사 없음)"}

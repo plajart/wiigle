@@ -4,6 +4,7 @@ import PointAccount from "./models/PointAccount";
 import PointEvent from "./models/PointEvent";
 import AuditLog from "./models/AuditLog";
 import Store from "./models/Store";
+import Company from "./models/Company";
 import User from "./models/User";
 import VendorImportRecord from "./models/VendorImportRecord";
 import RedeemLock from "./models/RedeemLock";
@@ -40,10 +41,23 @@ async function claimVendorImport(
   }
 }
 
-async function getOrCreateAccount(userId: string, storeId: string | null, type: "STORE" | "HQ") {
+/**
+ * 이 매장이 속한 고객사. 통합포인트는 고객사 단위로 운영되므로(같은 고객사의 매장끼리만 포인트를 합쳐 쓴다),
+ * 원장에 손대는 모든 경로가 먼저 이 값을 구한다.
+ */
+async function companyIdOfStore(storeId: string): Promise<string> {
+  const store = await Store.findById(storeId).select("companyId").lean();
+  if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(store.companyId);
+  return String(store.companyId);
+}
+
+// STORE 계좌는 (고객, 매장)으로, HQ(통합포인트) 계좌는 (고객, 고객사)로 하나씩 만든다.
+async function getOrCreateAccount(userId: string, storeId: string | null, type: "STORE" | "HQ", companyId: string) {
+  const filter = type === "HQ" ? { userId, storeId: null, type, companyId } : { userId, storeId, type };
   const account = await PointAccount.findOneAndUpdate(
-    { userId, storeId, type },
-    { $setOnInsert: { userId, storeId, type, balance: 0 } },
+    filter,
+    { $setOnInsert: { userId, storeId, type, companyId, balance: 0 } },
     { upsert: true, new: true }
   );
   return account;
@@ -62,22 +76,67 @@ async function atomicCredit(accountId: Types.ObjectId, amount: number) {
   return PointAccount.findByIdAndUpdate(accountId, { $inc: { balance: amount } }, { new: true });
 }
 
-export async function getMyPointSummary(userId: string) {
+export type CompanyPointSummary = {
+  companyId: string;
+  companyName: string;
+  hq: number; // 통합포인트(고객사 본사 지급분)
+  stores: { storeId: string; storeName: string; balance: number }[];
+  total: number; // 이 고객사 안에서 쓸 수 있는 통합 잔액
+};
+
+/** 고객의 포인트를 **고객사별로** 묶어서 돌려준다 — 고객사가 다르면 잔액을 합치지 않는다. */
+export async function getMyPointSummary(userId: string): Promise<{ companies: CompanyPointSummary[] }> {
   const accounts = await PointAccount.find({ userId }).populate("storeId", "name").lean();
-  const hq = accounts.find((a) => a.type === "HQ");
-  const stores = accounts
-    .filter((a) => a.type === "STORE")
-    .map((a) => ({
-      storeId: String(a.storeId?._id ?? a.storeId),
-      storeName: (a.storeId as unknown as { name?: string })?.name ?? "알 수 없음",
-      balance: a.balance,
-    }));
-  const total = (hq?.balance ?? 0) + stores.reduce((sum, s) => sum + s.balance, 0);
-  return { hq: hq?.balance ?? 0, stores, total };
+  const byCompany = new Map<string, CompanyPointSummary>();
+  for (const a of accounts) {
+    const cid = String(a.companyId);
+    let g = byCompany.get(cid);
+    if (!g) {
+      g = { companyId: cid, companyName: "", hq: 0, stores: [], total: 0 };
+      byCompany.set(cid, g);
+    }
+    if (a.type === "HQ") g.hq += a.balance;
+    else {
+      g.stores.push({
+        storeId: String((a.storeId as unknown as { _id?: unknown })?._id ?? a.storeId),
+        storeName: (a.storeId as unknown as { name?: string })?.name ?? "알 수 없음",
+        balance: a.balance,
+      });
+    }
+    g.total += a.balance;
+  }
+  const names = await Company.find({ _id: { $in: [...byCompany.keys()] } }).select("name").lean();
+  for (const c of names) {
+    const g = byCompany.get(String(c._id));
+    if (g) g.companyName = c.name;
+  }
+  return { companies: [...byCompany.values()].sort((x, y) => x.companyName.localeCompare(y.companyName, "ko")) };
 }
 
-export async function getMyPointHistory(userId: string) {
-  return PointEvent.find({ userId }).sort({ occurredAt: -1 }).limit(200).lean();
+/** 한 고객사 안에서의 잔액(통합포인트 + 그 고객사 매장들) — 매장·운영자 화면용. 계좌가 없으면 0. */
+export async function getCompanyPointSummary(userId: string, companyId: string): Promise<CompanyPointSummary> {
+  const all = await getMyPointSummary(userId);
+  const found = all.companies.find((c) => c.companyId === String(companyId));
+  if (found) return found;
+  const company = await Company.findById(companyId).select("name").lean();
+  return { companyId: String(companyId), companyName: company?.name ?? "", hq: 0, stores: [], total: 0 };
+}
+
+/** 이 고객이 이 고객사에서 이용한 적이 있는가(계좌 또는 내역) — 운영자 고객 조회 범위 판단용. */
+export async function hasCompanyRelation(userId: string, companyId: string): Promise<boolean> {
+  if (await PointAccount.exists({ userId, companyId })) return true;
+  return !!(await PointEvent.exists({ userId, companyId }));
+}
+
+export async function getMyPointHistory(userId: string, companyId?: string) {
+  const filter: Record<string, unknown> = { userId };
+  if (companyId) filter.companyId = companyId;
+  return PointEvent.find(filter)
+    .sort({ occurredAt: -1 })
+    .limit(200)
+    .populate("storeId", "name")
+    .populate("companyId", "name")
+    .lean();
 }
 
 /**
@@ -95,6 +154,12 @@ export async function transferPoints(
   if (amount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const targetStore = await Store.findById(targetStoreId);
   if (!targetStore) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(targetStore.companyId);
+  // 통합포인트는 고객사 단위 — 다른 고객사 매장의 포인트를 옮겨 올 수 없다.
+  if (sourceType === "STORE") {
+    if (!sourceStoreId) throw new ApiError(400, "SOURCE_STORE_REQUIRED");
+    if ((await companyIdOfStore(sourceStoreId)) !== companyId) throw new ApiError(403, "DIFFERENT_COMPANY");
+  }
   if (!targetStore.posIntegration.scopes.includes("accept_transfer")) {
     throw new ApiError(403, "TRANSFER_NOT_ACCEPTED");
   }
@@ -102,16 +167,18 @@ export async function transferPoints(
   const sourceAccount = await getOrCreateAccount(
     customerId,
     sourceType === "STORE" ? sourceStoreId : null,
-    sourceType
+    sourceType,
+    companyId
   );
   const debited = await atomicDebit(sourceAccount._id, amount);
   if (!debited) throw new ApiError(400, "INSUFFICIENT_BALANCE");
 
-  const targetAccount = await getOrCreateAccount(customerId, targetStoreId, "STORE");
+  const targetAccount = await getOrCreateAccount(customerId, targetStoreId, "STORE", companyId);
   await atomicCredit(targetAccount._id, amount);
 
   await PointEvent.create({
     userId: customerId,
+    companyId,
     storeId: targetStoreId,
     sourceType,
     sourceStoreId: sourceType === "STORE" ? sourceStoreId : null,
@@ -121,6 +188,7 @@ export async function transferPoints(
   });
   const event = await PointEvent.create({
     userId: customerId,
+    companyId,
     storeId: targetStoreId,
     type: "TRANSFER_IN",
     amount,
@@ -138,12 +206,13 @@ export async function transferPoints(
   return event;
 }
 
-export async function grantHqPoints(customerId: string, amount: number, reason: string, actorId: string) {
+export async function grantHqPoints(customerId: string, companyId: string, amount: number, reason: string, actorId: string) {
   if (amount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
-  const account = await getOrCreateAccount(customerId, null, "HQ");
+  const account = await getOrCreateAccount(customerId, null, "HQ", companyId);
   await atomicCredit(account._id, amount);
   await PointEvent.create({
     userId: customerId,
+      companyId,
     storeId: null,
     type: "GRANT",
     amount,
@@ -151,12 +220,12 @@ export async function grantHqPoints(customerId: string, amount: number, reason: 
     approvedBy: actorId,
     reason,
   });
-  await AuditLog.create({ storeId: null, actorType: "HQ_ADMIN", actorId, action: "HQ_GRANT", meta: { customerId, amount, reason } });
+  await AuditLog.create({ storeId: null, actorType: "HQ_ADMIN", actorId, action: "HQ_GRANT", meta: { customerId, companyId, amount, reason } });
 }
 
-export async function adjustHqPoints(customerId: string, delta: number, reason: string, actorId: string) {
+export async function adjustHqPoints(customerId: string, companyId: string, delta: number, reason: string, actorId: string) {
   if (delta === 0) throw new ApiError(400, "INVALID_AMOUNT");
-  const account = await getOrCreateAccount(customerId, null, "HQ");
+  const account = await getOrCreateAccount(customerId, null, "HQ", companyId);
   if (delta < 0) {
     const debited = await atomicDebit(account._id, -delta);
     if (!debited) throw new ApiError(400, "INSUFFICIENT_BALANCE");
@@ -165,6 +234,7 @@ export async function adjustHqPoints(customerId: string, delta: number, reason: 
   }
   await PointEvent.create({
     userId: customerId,
+      companyId,
     storeId: null,
     type: "ADJUST",
     amount: delta,
@@ -172,7 +242,7 @@ export async function adjustHqPoints(customerId: string, delta: number, reason: 
     approvedBy: actorId,
     reason,
   });
-  await AuditLog.create({ storeId: null, actorType: "HQ_ADMIN", actorId, action: "HQ_ADJUST", meta: { customerId, delta, reason } });
+  await AuditLog.create({ storeId: null, actorType: "HQ_ADMIN", actorId, action: "HQ_ADJUST", meta: { customerId, companyId, delta, reason } });
 }
 
 /**
@@ -185,11 +255,13 @@ export async function adjustHqPoints(customerId: string, delta: number, reason: 
  * 반영하는 것뿐이라 거부할 수 없다 — 호출부에서 각자 다르게 처리한다.
  */
 async function debitAvailable(customerId: string, storeId: string, amount: number) {
-  const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE");
-  const hqAccount = await getOrCreateAccount(customerId, null, "HQ");
+  const companyId = await companyIdOfStore(storeId);
+  const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
+  const hqAccount = await getOrCreateAccount(customerId, null, "HQ", companyId);
   const otherStoreAccounts = await PointAccount.find({
     userId: customerId,
     type: "STORE",
+    companyId, // 다른 고객사 매장의 포인트는 절대 쓰지 않는다
     storeId: { $ne: new Types.ObjectId(storeId) },
     balance: { $gt: 0 },
   });
@@ -229,12 +301,13 @@ async function debitAvailable(customerId: string, storeId: string, amount: numbe
   return breakdown;
 }
 
-/** 이 고객이 이 매장 결제에 지금 당장 쓸 수 있는 총액(매장+본사+타매장 잔액 합) — 벤더 POS 화면에 밀어넣을 "가용" 숫자. */
+/** 이 고객이 이 매장 결제에 지금 당장 쓸 수 있는 총액(같은 고객사의 매장+통합포인트+타매장 잔액 합) — 벤더 POS 화면에 밀어넣을 "가용" 숫자. */
 export async function getAvailableForStore(customerId: string, storeId: string) {
+  const companyId = await companyIdOfStore(storeId);
   const [storeAccount, hqAccount, otherStoreAccounts] = await Promise.all([
-    getOrCreateAccount(customerId, storeId, "STORE"),
-    getOrCreateAccount(customerId, null, "HQ"),
-    PointAccount.find({ userId: customerId, type: "STORE", storeId: { $ne: new Types.ObjectId(storeId) } }),
+    getOrCreateAccount(customerId, storeId, "STORE", companyId),
+    getOrCreateAccount(customerId, null, "HQ", companyId),
+    PointAccount.find({ userId: customerId, type: "STORE", companyId, storeId: { $ne: new Types.ObjectId(storeId) } }),
   ]);
   return storeAccount.balance + hqAccount.balance + otherStoreAccounts.reduce((s, a) => s + a.balance, 0);
 }
@@ -255,6 +328,7 @@ export async function posEarn(
   if (!Number.isFinite(earnAmountInput) || earnAmountInput <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(store.companyId);
   if (!store.posIntegration.scopes.includes("write_earn")) {
     throw new ApiError(403, "WRITE_EARN_NOT_CONSENTED");
   }
@@ -270,6 +344,7 @@ export async function posEarn(
   try {
     event = await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       type: "EARN",
       amount: earnAmount,
@@ -286,7 +361,7 @@ export async function posEarn(
     throw e;
   }
 
-  const account = await getOrCreateAccount(customerId, storeId, "STORE");
+  const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
   if (earnAmount > 0) await atomicCredit(account._id, earnAmount);
 
   await AuditLog.create({
@@ -317,6 +392,7 @@ export async function posCheckout(
   if (amount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(store.companyId);
   if (!store.posIntegration.scopes.includes("write_redeem")) {
     throw new ApiError(403, "WRITE_REDEEM_NOT_CONSENTED");
   }
@@ -334,6 +410,7 @@ export async function posCheckout(
   try {
     event = await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       type: "REDEEM",
       amount,
@@ -347,13 +424,13 @@ export async function posCheckout(
       // 진짜 동시요청 레이스 — 방금 debitAvailable로 차감한 만큼을 되돌린다(각 계좌별로 breakdown 그대로 환급).
       for (const b of breakdown) {
         if (b.source === "STORE_SELF") {
-          const acc = await getOrCreateAccount(customerId, storeId, "STORE");
+          const acc = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
           await atomicCredit(acc._id, b.amount);
         } else if (b.source === "HQ") {
-          const acc = await getOrCreateAccount(customerId, null, "HQ");
+          const acc = await getOrCreateAccount(customerId, null, "HQ", companyId);
           await atomicCredit(acc._id, b.amount);
         } else if (b.source.startsWith("STORE:")) {
-          const acc = await getOrCreateAccount(customerId, b.source.slice(6), "STORE");
+          const acc = await getOrCreateAccount(customerId, b.source.slice(6), "STORE", companyId);
           await atomicCredit(acc._id, b.amount);
         }
       }
@@ -402,6 +479,7 @@ export async function applyVendorSync(
   terminalId: string
 ) {
   const applied: { vendorTxnId: string; type: string; amount: number; note?: string }[] = [];
+  const companyId = await companyIdOfStore(storeId);
 
   // 이 포스기에서 이 고객의 레거시 잔액을 가져온 적이 없는지 확인(포스기 단위 — 매장의
   // 다른 포스기에서 이미 실적립/사용이 있었어도 이 포스기 몫은 별도로 가져와야 함).
@@ -409,10 +487,11 @@ export async function applyVendorSync(
     ? await claimVendorImport(storeId, terminalId, customerId, existingVendorBalance, "LAZY")
     : false;
   if (canImport) {
-    const account = await getOrCreateAccount(customerId, storeId, "STORE");
+    const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
     await atomicCredit(account._id, existingVendorBalance!);
     await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       type: "VENDOR_IMPORT",
       amount: existingVendorBalance,
@@ -435,10 +514,11 @@ export async function applyVendorSync(
     if (dup) continue; // 이미 반영됨 — 재전송이어도 안전(멱등)
 
     if (ev.type === "EARN") {
-      const account = await getOrCreateAccount(customerId, storeId, "STORE");
+      const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
       await atomicCredit(account._id, ev.amount);
       await PointEvent.create({
         userId: customerId,
+      companyId,
         storeId,
         type: "VENDOR_EARN",
         amount: ev.amount,
@@ -453,12 +533,13 @@ export async function applyVendorSync(
       if (!breakdown) {
         // 잔액 부족 — 벤더 POS에서 이미 확정된 결제라 되돌릴 수 없음. 있는 만큼만 매장계좌에서
         // 강제 차감해 마이너스로 만들고 결손을 감사로그에 남긴다(운영자 수동정산 대상).
-        const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE");
+        const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
         await PointAccount.findByIdAndUpdate(storeAccount._id, { $inc: { balance: -ev.amount } });
         note = "SHORTFALL_FORCED_NEGATIVE";
       }
       await PointEvent.create({
         userId: customerId,
+      companyId,
         storeId,
         type: "VENDOR_USE",
         amount: ev.amount,
@@ -550,6 +631,7 @@ export async function posAgentEarn(input: AgentEarnInput) {
   if (addAmount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(store.companyId);
 
   const user = await getOrCreateUserByPhone(phone);
   const customerId = String(user._id);
@@ -560,10 +642,11 @@ export async function posAgentEarn(input: AgentEarnInput) {
     ? await claimVendorImport(storeId, terminalId, customerId, existingVendorBalance, "LAZY")
     : false;
   if (canImport) {
-    const importAccount = await getOrCreateAccount(customerId, storeId, "STORE");
+    const importAccount = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
     await atomicCredit(importAccount._id, existingVendorBalance!);
     await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       terminalId,
       cardNo,
@@ -587,6 +670,7 @@ export async function posAgentEarn(input: AgentEarnInput) {
   try {
     event = await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       terminalId,
       cardNo,
@@ -607,7 +691,7 @@ export async function posAgentEarn(input: AgentEarnInput) {
   }
 
   if (earnAmount > 0) {
-    const account = await getOrCreateAccount(customerId, storeId, "STORE");
+    const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
     await atomicCredit(account._id, earnAmount);
   }
 
@@ -637,6 +721,7 @@ export async function bulkImportLegacyBalances(
 ): Promise<BulkImportResult> {
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+  const companyId = String(store.companyId);
 
   // 같은 전화번호가 여러 줄로 들어오면(포스기 쪽 중복 회원) 합산 — 카드번호는 감사기록용으로 첫 값만 남긴다.
   const byPhone = new Map<string, { balance: number; cardNo?: string }>();
@@ -666,10 +751,11 @@ export async function bulkImportLegacyBalances(
       alreadyLinked++;
       continue;
     }
-    const account = await getOrCreateAccount(customerId, storeId, "STORE");
+    const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
     await atomicCredit(account._id, balance);
     await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       terminalId,
       cardNo,
@@ -732,6 +818,7 @@ export type AgentRedeemInput = {
 export async function posAgentRedeemApply(input: AgentRedeemInput) {
   const { storeId, terminalId, phone, usedAmount, cardNo, vendorTxnId } = input;
   if (usedAmount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
+  const companyId = await companyIdOfStore(storeId);
   const user = await getOrCreateUserByPhone(phone);
   const customerId = String(user._id);
 
@@ -742,12 +829,13 @@ export async function posAgentRedeemApply(input: AgentRedeemInput) {
     const breakdown = await debitAvailable(customerId, storeId, usedAmount);
     let note: string | undefined;
     if (!breakdown) {
-      const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE");
+      const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
       await PointAccount.findByIdAndUpdate(storeAccount._id, { $inc: { balance: -usedAmount } });
       note = "SHORTFALL_FORCED_NEGATIVE";
     }
     const event = await PointEvent.create({
       userId: customerId,
+      companyId,
       storeId,
       terminalId,
       cardNo,

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireOwnStore } from "@/lib/rbac";
-import { lookupCustomerByPhone, getMyPointSummary } from "@/lib/points";
+import { lookupCustomerByPhone, getCompanyPointSummary } from "@/lib/points";
 import Store from "@/lib/models/Store";
 import { handleApiError } from "@/lib/api-utils";
 
@@ -27,7 +27,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ phone: 
       return NextResponse.json({ error: "CUSTOMER_NOT_FOUND" }, { status: 404 });
     }
 
-    const summary = await getMyPointSummary(String(customer._id));
+    // 통합포인트는 고객사 단위 — 이 매장이 속한 고객사 안의 잔액만 보여준다.
+    const summary = await getCompanyPointSummary(String(customer._id), String(store.companyId));
     const myStoreBalance = summary.stores.find((s) => s.storeId === session.storeManagerOf)?.balance ?? 0;
     const hq = { customerId: String(customer._id), name: customer.name, myStoreBalance, total: summary.total };
 

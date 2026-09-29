@@ -34,7 +34,7 @@ export default function StoreDashboardClient({ storeId }: { storeId: string }) {
               <div className="stat-sub">명</div>
             </div>
             <div className="stat-tile accent">
-              <div className="stat-label">매장 포인트 총 잔액</div>
+              <div className="stat-label">이 매장 적립 포인트 총 잔액</div>
               <div className="stat-value">{summary.totalBalance.toLocaleString()}</div>
               <div className="stat-sub">P</div>
             </div>

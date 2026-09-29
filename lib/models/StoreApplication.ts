@@ -1,10 +1,13 @@
 import mongoose, { Schema, models, model, Types } from "mongoose";
 
 export type ApplicationStatus = "PENDING" | "APPROVED" | "REJECTED";
+// NEW_COMPANY: 새 고객사(본사)와 첫 매장 등록 / ADD_STORE: 이미 있는 고객사에 매장 추가
+export type ApplicationType = "NEW_COMPANY" | "ADD_STORE";
 
 export interface IStoreApplication {
   _id: Types.ObjectId;
-  companyName: string; // 새로 생길 고객사(본사) 이름 — 승인 시 Company와 첫 매장이 함께 생성됨
+  type: ApplicationType;
+  companyName: string; // 신청자가 적은 고객사(본사) 이름 — 승인 때 소유자가 새 고객사로 만들지 기존 고객사에 붙일지 정한다
   storeName: string;
   franchiseCode?: string;
   applicantName: string;
@@ -21,6 +24,7 @@ export interface IStoreApplication {
 }
 
 const StoreApplicationSchema = new Schema<IStoreApplication>({
+  type: { type: String, enum: ["NEW_COMPANY", "ADD_STORE"], default: "NEW_COMPANY" },
   companyName: { type: String, required: true },
   storeName: { type: String, required: true },
   franchiseCode: { type: String },

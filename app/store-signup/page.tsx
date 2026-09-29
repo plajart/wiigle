@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 export default function StoreSignupPage() {
+  const [type, setType] = useState<"NEW_COMPANY" | "ADD_STORE">("NEW_COMPANY");
   const [companyName, setCompanyName] = useState("");
   const [storeName, setStoreName] = useState("");
   const [franchiseCode, setFranchiseCode] = useState("");
@@ -21,7 +22,7 @@ export default function StoreSignupPage() {
       const res = await fetch("/api/v1/store-applications", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyName, storeName, franchiseCode, applicantName, applicantPhone, password }),
+        body: JSON.stringify({ type, companyName, storeName, franchiseCode, applicantName, applicantPhone, password }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -32,7 +33,9 @@ export default function StoreSignupPage() {
               ? "이미 심사 대기 중인 신청이 있습니다."
               : data.error === "PASSWORD_TOO_SHORT"
                 ? "비밀번호는 8자 이상이어야 합니다."
-                : (data.error ?? "신청 실패");
+                : data.error === "TOO_MANY_REQUESTS"
+                  ? "신청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+                  : (data.error ?? "신청 실패");
         setError(msg);
         return;
       }
@@ -52,8 +55,8 @@ export default function StoreSignupPage() {
           </div>
           <h1>신청 완료</h1>
           <p className="muted">
-            매장 등록 신청이 접수되었습니다. 검토 후 승인되면 입력하신 휴대폰번호와 비밀번호로 매장 관리자 화면에 로그인할
-            수 있습니다.
+            등록 신청이 접수되었습니다. 검토 후 승인되면 입력하신 휴대폰번호와 비밀번호로 매장 관리자 화면에 로그인할 수
+            있습니다. 승인 여부는 별도로 알려드리지 않으니, 며칠 뒤 로그인해 확인해주세요.
           </p>
         </div>
       </div>
@@ -67,10 +70,17 @@ export default function StoreSignupPage() {
           <span className="dot" />
           포인트 관리
         </div>
-        <h1>매장 등록 신청</h1>
+        <h1>고객사·매장 등록 신청</h1>
         <form onSubmit={onSubmit}>
           <div className="field">
-            <label>회사명(고객사)</label>
+            <label>신청 종류</label>
+            <select value={type} onChange={(e) => setType(e.target.value as "NEW_COMPANY" | "ADD_STORE")}>
+              <option value="NEW_COMPANY">새 고객사(본사)와 첫 매장 등록</option>
+              <option value="ADD_STORE">이미 등록된 고객사에 매장 추가</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>{type === "ADD_STORE" ? "소속 고객사(본사) 이름" : "회사명(고객사)"}</label>
             <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="예: 더파티" required />
           </div>
           <div className="field">
@@ -95,7 +105,7 @@ export default function StoreSignupPage() {
           </div>
           {error && <div className="error">{error}</div>}
           <button type="submit" className="full" disabled={loading}>
-            {loading ? "제출 중..." : "가입 신청"}
+            {loading ? "제출 중..." : "등록 신청"}
           </button>
         </form>
         <p className="auth-foot">

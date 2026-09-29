@@ -8,6 +8,7 @@ type HistoryItem = {
   amount: number;
   status: string;
   storeId?: { name?: string } | null;
+  companyId?: { name?: string } | null;
   occurredAt: string;
 };
 
@@ -68,7 +69,7 @@ export default function HistoryClient() {
                   {TYPE_LABEL[h.type] ?? h.type}
                 </span>
                 <div className="faint" style={{ marginTop: 4 }}>
-                  {new Date(h.occurredAt).toLocaleString("ko-KR")} · {h.storeId?.name ?? "본사"}
+                  {new Date(h.occurredAt).toLocaleString("ko-KR")} · {h.companyId?.name ? `${h.companyId.name} · ` : ""}{h.storeId?.name ?? "통합포인트"}
                 </div>
               </span>
               <span className="value" style={{ color: positive ? "var(--success)" : "var(--danger)" }}>

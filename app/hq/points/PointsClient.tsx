@@ -26,7 +26,7 @@ export default function PointsClient() {
         body: JSON.stringify({ customerPhone: grantPhone, amount: Number(grantAmount), reason: grantReason }),
       });
       const data = await res.json();
-      setGrantMsg(res.ok ? { text: "포인트가 발급되었습니다.", ok: true } : { text: `실패: ${data.error}`, ok: false });
+      setGrantMsg(res.ok ? { text: "통합포인트를 지급했습니다.", ok: true } : { text: `실패: ${data.error}`, ok: false });
       if (res.ok) {
         setGrantAmount("");
         setGrantReason("");
@@ -60,11 +60,12 @@ export default function PointsClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
-        <h1>포인트 관리</h1>
+        <div className="eyebrow">본사 관리모드</div>
+        <h1>통합포인트 관리</h1>
+        <div className="desc">통합포인트는 현재 고객사 단위로 지급·조정되며, 그 고객사의 모든 매장에서 사용할 수 있습니다.</div>
       </div>
 
-      <h2>본사 포인트 발급</h2>
+      <h2>통합포인트 지급</h2>
       <div className="card">
         <form onSubmit={grant}>
           <div className="field">
@@ -81,12 +82,12 @@ export default function PointsClient() {
           </div>
           {grantMsg && <p className={grantMsg.ok ? "success-msg" : "error"}>{grantMsg.text}</p>}
           <button type="submit" className="full gold" disabled={grantBusy}>
-            {grantBusy ? "처리 중..." : "포인트 발급"}
+            {grantBusy ? "처리 중..." : "통합포인트 지급"}
           </button>
         </form>
       </div>
 
-      <h2>본사 포인트 조정 / 회수</h2>
+      <h2>통합포인트 조정 / 회수</h2>
       <div className="card">
         <form onSubmit={adjust}>
           <div className="field">

@@ -9,12 +9,16 @@ import StoreApplication from "@/lib/models/StoreApplication";
 import { issueDigitalCardNo } from "@/lib/card";
 import { handleApiError } from "@/lib/api-utils";
 
-// 소유자: 매장 가입 신청 승인 → 새 고객사 + 첫 매장 + 매장 관리자(manager) 계정 생성.
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+// 소유자: 등록 신청 승인 → (새 고객사 또는 기존 고객사에) 매장 + 매장 관리자(manager) 계정 생성.
+//  - body.companyId 가 있으면 그 기존 고객사에 매장을 추가한다.
+//  - 없으면 새 고객사를 만든다. 단 같은 이름의 고객사가 이미 있으면 중복 생성을 막고 409(COMPANY_NAME_EXISTS)로
+//    알려서 소유자가 "기존 고객사에 추가"를 고르게 한다.
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await dbConnect();
     const session = await requireOwner();
     const { id } = await params;
+    const { companyId } = await req.json().catch(() => ({ companyId: undefined }));
 
     const application = await StoreApplication.findById(id);
     if (!application) return NextResponse.json({ error: "APPLICATION_NOT_FOUND" }, { status: 404 });
@@ -25,7 +29,15 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     const dup = await User.findOne({ phone: application.applicantPhone });
     if (dup) return NextResponse.json({ error: "PHONE_ALREADY_USED" }, { status: 409 });
 
-    const company = await Company.create({ name: application.companyName });
+    let company;
+    if (companyId) {
+      company = await Company.findById(companyId);
+      if (!company) return NextResponse.json({ error: "COMPANY_NOT_FOUND" }, { status: 404 });
+    } else {
+      const same = await Company.findOne({ name: application.companyName }).select("_id").lean();
+      if (same) return NextResponse.json({ error: "COMPANY_NAME_EXISTS", existingCompanyId: String(same._id) }, { status: 409 });
+      company = await Company.create({ name: application.companyName });
+    }
 
     const store = await Store.create({
       name: application.storeName,
@@ -58,7 +70,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       actorType: "HQ_ADMIN",
       actorId: session.sub,
       action: "STORE_APPLICATION_APPROVED",
-      meta: { applicationId: application._id, companyId: company._id, storeId: store._id, managerId: manager._id },
+      meta: { applicationId: application._id, companyId: company._id, storeId: store._id, managerId: manager._id, newCompany: !companyId },
     });
 
     return NextResponse.json({ ok: true, companyId: company._id, storeId: store._id });

@@ -17,6 +17,7 @@ export interface IPointEvent {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
   storeId: Types.ObjectId | null;
+  companyId?: Types.ObjectId; // 이 내역이 속한 고객사(통합포인트 지급·조정은 storeId가 없어도 고객사가 있다)
   sourceType?: "STORE" | "HQ"; // 이체 요청 시 출처
   sourceStoreId?: Types.ObjectId | null;
   type: PointEventType;
@@ -34,6 +35,7 @@ export interface IPointEvent {
 const PointEventSchema = new Schema<IPointEvent>({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
   storeId: { type: Schema.Types.ObjectId, ref: "Store", default: null },
+  companyId: { type: Schema.Types.ObjectId, ref: "Company" },
   sourceType: { type: String, enum: ["STORE", "HQ"] },
   sourceStoreId: { type: Schema.Types.ObjectId, ref: "Store", default: null },
   type: {
@@ -66,6 +68,9 @@ const PointEventSchema = new Schema<IPointEvent>({
   cardNo: { type: String },
   occurredAt: { type: Date, default: Date.now },
 });
+
+// 고객 화면(고객사별 이용내역)·운영자 고객 조회가 훑는 쿼리
+PointEventSchema.index({ userId: 1, companyId: 1, occurredAt: -1 });
 
 // 매장의 일일 정산(날짜별 집계, 단말별 상세)이 훑는 쿼리 — 항상 storeId+occurredAt 범위로 조회한다.
 PointEventSchema.index({ storeId: 1, occurredAt: -1 });

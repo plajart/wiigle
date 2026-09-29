@@ -185,7 +185,7 @@ export default function PosClient() {
           </div>
           {result.breakdown.map((b, i) => (
             <div className="row" key={i}>
-              <span className="label">{b.source === "STORE_SELF" ? "이 매장 포인트" : b.source === "HQ" ? "본사 포인트" : b.source}</span>
+              <span className="label">{b.source === "STORE_SELF" ? "이 매장 포인트" : b.source === "HQ" ? "통합포인트" : b.source}</span>
               <span className="value">{b.amount.toLocaleString()}P</span>
             </div>
           ))}

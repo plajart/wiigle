@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireOwnStore } from "@/lib/rbac";
-import { lookupCustomerByPosCard, getMyPointSummary } from "@/lib/points";
+import { lookupCustomerByPosCard, getCompanyPointSummary } from "@/lib/points";
+import Store from "@/lib/models/Store";
 import { handleApiError } from "@/lib/api-utils";
 
 // 이전에 link-card로 연결해둔 POS 카드번호로 고객을 조회한다(전화번호 재입력 없이 인식).
@@ -14,7 +15,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ cardNo:
     const customer = await lookupCustomerByPosCard(session.storeManagerOf, cardNo);
     if (!customer) return NextResponse.json({ error: "CARD_NOT_LINKED" }, { status: 404 });
 
-    const summary = await getMyPointSummary(String(customer._id));
+    const store = await Store.findById(session.storeManagerOf).select("companyId").lean();
+    if (!store) return NextResponse.json({ error: "STORE_NOT_FOUND" }, { status: 404 });
+    const summary = await getCompanyPointSummary(String(customer._id), String(store.companyId));
     const myStoreBalance = summary.stores.find((s) => s.storeId === session.storeManagerOf)?.balance ?? 0;
 
     return NextResponse.json({

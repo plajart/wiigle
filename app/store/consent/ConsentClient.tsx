@@ -9,7 +9,7 @@ const SCOPE_LABEL: Record<string, string> = {
   read_history: "적립/사용 이력 조회",
   write_redeem: "포인트 사용(차감) 처리 — POS 앱에서 차감 확정 허용",
   write_earn: "포인트 적립 처리 — POS 앱에서 적립 허용",
-  accept_transfer: "본사/타매장 포인트 사용 허용 (고객이 이 매장에서 본사·타매장 포인트를 즉시 사용)",
+  accept_transfer: "통합포인트·같은 고객사 다른 매장 포인트 사용 허용 (고객이 이 매장에서 같은 고객사의 통합포인트와 다른 매장 포인트를 즉시 사용)",
 };
 
 export default function ConsentClient({ storeId }: { storeId: string }) {
