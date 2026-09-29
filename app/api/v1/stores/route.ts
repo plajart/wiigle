@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { dbConnect } from "@/lib/mongodb";
 import { requireCompanyAdmin } from "@/lib/rbac";
+import { resolveCompanyId } from "@/lib/company-context";
 import { hashPassword } from "@/lib/auth";
 import { issueDigitalCardNo } from "@/lib/card";
 import Store from "@/lib/models/Store";
@@ -18,11 +19,13 @@ export async function GET(req: Request) {
     const session = await requireCompanyAdmin();
     const queryCompanyId = new URL(req.url).searchParams.get("companyId");
 
+    // 운영자는 자기 고객사, 소유자는 ?companyId= → 본사 관리모드로 들어간 고객사 → (없으면) 전체 순.
     let filter: Record<string, unknown> = {};
     if (session.role === "admin") {
       filter = { companyId: session.companyAdminOf };
-    } else if (queryCompanyId) {
-      filter = { companyId: queryCompanyId };
+    } else {
+      const companyId = queryCompanyId ?? (await resolveCompanyId(session));
+      if (companyId) filter = { companyId };
     }
     const [stores, companies] = await Promise.all([
       Store.find(filter).select("name franchiseCode companyId").sort({ name: 1 }).lean(),
@@ -59,8 +62,10 @@ export async function POST(req: Request) {
     if (session.role === "admin") {
       targetCompanyId = session.companyAdminOf!;
     } else {
-      if (!companyId) return NextResponse.json({ error: "COMPANY_ID_REQUIRED" }, { status: 400 });
-      targetCompanyId = companyId;
+      // 소유자: 본사 관리모드로 들어간 고객사에 만든다(명시한 companyId가 있으면 그것).
+      const chosen = companyId ?? (await resolveCompanyId(session));
+      if (!chosen) return NextResponse.json({ error: "COMPANY_ID_REQUIRED" }, { status: 400 });
+      targetCompanyId = chosen;
     }
 
     const dup = await User.findOne({ phone: adminPhone });

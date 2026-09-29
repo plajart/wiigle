@@ -23,8 +23,8 @@ export default async function StoreLayout({ children }: { children: React.ReactN
   const company = await Company.findById(store.companyId).select("name").lean();
 
   const ITEMS: SidebarItem[] = [{ href: "/store", label: "대시보드", icon: "▤" }];
-  // 결제 터미널은 실제 매장 계정(manager)으로 로그인해야 쓸 수 있다(운영자·소유자는 결제 화면 불가).
-  if (session.role === "manager") ITEMS.push({ href: "/pos", label: "POS 결제 터미널", icon: "◎" });
+  // 결제 터미널: 매장 관리자, 그리고 슈퍼관리자인 소유자(들어가 있는 매장). 운영자는 결제 화면을 쓰지 않는다.
+  if (session.role === "manager" || session.role === "owner") ITEMS.push({ href: "/pos", label: "POS 결제 터미널", icon: "◎" });
   ITEMS.push(
     { href: "/store/qr", label: "가입 안내 QR", icon: "▦" },
     { href: "/store/terminals", label: "포스기 다운로드", icon: "⌘" },

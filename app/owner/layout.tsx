@@ -11,13 +11,11 @@ export default async function OwnerLayout({ children }: { children: React.ReactN
   const items: SidebarItem[] = [
     { href: "/owner", label: "고객사 관리", icon: "◈" },
     { href: "/owner/admins", label: "운영자 배정", icon: "◐" },
-    { href: "/hq/applications", label: "매장 가입 신청", icon: "✓" },
+    { href: "/owner/applications", label: "매장 가입 신청", icon: "✓" },
     { href: "/owner/app-releases", label: "고객앱 버전 관리", icon: "⚙" },
   ];
-  const modeLinks: SidebarItem[] = [
-    { href: "/me", label: "회원 모드로", icon: "○" },
-    { href: "/hq", label: "운영자 모드", icon: "▤" },
-  ];
+  // 본사·매장 관리모드는 아래 고객사 목록에서 고객사를 골라 들어간다(바로가기 없음).
+  const modeLinks: SidebarItem[] = [{ href: "/me", label: "회원 모드로", icon: "○" }];
   if (session.storeManagerOf) modeLinks.push({ href: "/store", label: "매장 관리 모드", icon: "◎" });
 
   return (

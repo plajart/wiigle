@@ -19,7 +19,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
 
   const modeLinks: SidebarItem[] = [];
   if (session.role === "owner") modeLinks.push({ href: "/owner", label: "소유자 모드", icon: "★" });
-  if (session.role === "owner" || session.role === "admin") modeLinks.push({ href: "/hq", label: "운영자 모드", icon: "▤" });
+  if (session.role === "admin") modeLinks.push({ href: "/hq", label: "운영자 모드", icon: "▤" });
   if (session.storeManagerOf) modeLinks.push({ href: "/store", label: "매장 관리 모드", icon: "◎" });
 
   return (

@@ -3,13 +3,17 @@ import mongoose from "mongoose";
 import { getSession } from "@/lib/session";
 import { dbConnect } from "@/lib/mongodb";
 import { STORE_CONTEXT_COOKIE } from "@/lib/store-context";
+import { COMPANY_CONTEXT_COOKIE } from "@/lib/company-context";
 import Store from "@/lib/models/Store";
 
-function redirectTo(path: string, cookie?: string) {
+function redirectTo(path: string, cookie?: string, companyCookie?: string) {
   // 상대 경로 리다이렉트 — 프록시 뒤에서도 공개 주소를 그대로 따른다.
   const res = new NextResponse(null, { status: 302, headers: { Location: path } });
   if (cookie) {
     res.cookies.set(STORE_CONTEXT_COOKIE, cookie, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+  }
+  if (companyCookie) {
+    res.cookies.set(COMPANY_CONTEXT_COOKIE, companyCookie, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
   }
   return res;
 }
@@ -31,5 +35,6 @@ export async function GET(req: Request) {
   if (!store) return redirectTo(home);
   if (session.role === "admin" && String(store.companyId) !== session.companyAdminOf) return redirectTo(home);
 
-  return redirectTo("/store", storeId);
+  // 소유자는 그 매장의 고객사도 현재 고객사로 맞춘다(운영자 화면으로 돌아갔을 때 같은 고객사가 보이도록).
+  return redirectTo("/store", storeId, session.role === "owner" ? String(store.companyId) : undefined);
 }
