@@ -15,21 +15,65 @@
 #
 # 설치·최초 실행 안내(계산원용): 매장 관리자가 카운터 PC의 브라우저에서 홈페이지에 로그인해 매장
 # 관리모드의 "포스기 다운로드"를 누르면, 그 매장 전용 설치 정보가 담긴 압축파일이 받아집니다.
-# 압축을 풀고 "start.bat"을 더블클릭하면 인증코드 입력 없이 설치·등록·초기화가 자동으로 끝나고,
-# 이 매장의 포스기 목록이 창으로 표시됩니다(매장의 첫 단말은 자동으로 대표 포스기). 이후 컴퓨터를
-# 켤 때마다 자동으로 시작됩니다. 챔프 DB 준비도 전부 자동입니다.
+# 압축을 (지워지지 않는 폴더에) 풀고 "start.bat"을 더블클릭하면 인증코드 입력 없이 설치·등록·초기화가
+# 자동으로 끝나고, 이 매장의 포스기 목록이 창으로 표시됩니다(매장의 첫 단말은 자동으로 대표 포스기).
+# 이후 컴퓨터를 켤 때마다 자동으로 시작됩니다. 챔프 DB 준비도 전부 자동입니다.
+#
+# start.bat은 여러 번 실행해도 안전합니다 — 이미 실행 중이면 새로 띄우지 않고, 이미 등록된 PC면 다시 등록하지
+# 않습니다. 프로그램 본체는 창 없이(숨김) 실행되므로 검은 창을 닫아도 꺼지지 않습니다. 실행 기록은
+# 같은 폴더의 agent.log에 남습니다. 제거는 uninstall.bat, 포인트 복구는 restore.bat 입니다.
+#
+# 실행 방식(-Setup): start.bat이 이 스크립트를 -Setup으로 실행 → 등록·자동시작 확인 후 본체를 숨김 실행하고 끝납니다.
+#                   -Setup 없이 실행하면 프로그램 본체입니다(자동시작이 이 방식으로 실행).
 
 param(
     [string]$BaseUrl = "https://concrab.com",
     [string]$ConfigPath = "$PSScriptRoot\terminal-config.json",
     [int]$QueuePollSec = 3,
-    [int]$SwapTimeoutSec = 180  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
+    [int]$SwapTimeoutSec = 180,  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
+    [switch]$Setup,    # start.bat이 지정 — 설치·등록·자동시작 확인 후 본체를 숨김 실행하고 종료
+    [switch]$ShowList  # 방금 설치·등록한 직후 이 매장의 포스기 목록을 한 번 보여준다
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+
+# ─── 공용 도우미: 중복 실행 방지·프로세스·로그 ───────────────────────────────────
+
+$MutexName = "Global\PointManagerAgent"
+
+# 프로그램 본체는 한 PC에서 하나만 실행돼야 한다 — 둘이 떠 있으면 같은 결제 대기열(CRAB_EVENT_QUEUE)을 둘 다 처리해
+# 포스DB 잔액을 이중으로 차감하게 된다. 이미 실행 중이면 $false.
+function Enter-SingleInstance {
+    try { $m = New-Object System.Threading.Mutex($false, $MutexName) }
+    catch { $m = New-Object System.Threading.Mutex($false, "Local\PointManagerAgent") }
+    $Script:InstanceMutex = $m  # 프로세스가 끝날 때까지 유지
+    try { return $m.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] { return $true }  # 이전 프로세스가 비정상 종료한 경우
+}
+
+# 지금 프로그램 본체가 실행 중인가(실행 중이면 그 프로세스가 뮤텍스를 열어 두고 있다).
+function Test-AgentRunning {
+    try { $m = [System.Threading.Mutex]::OpenExisting($MutexName); $m.Dispose(); return $true }
+    catch [System.Threading.WaitHandleCannotBeOpenedException] { return $false }
+    catch { return $true }
+}
+
+# 압축 미리보기/임시 폴더에서 실행하면 설치 정보가 사라지거나 자동시작이 깨진다.
+function Test-TempFolder {
+    return ($PSScriptRoot -imatch '\\AppData\\Local\\Temp(\\|$)') -or ($PSScriptRoot -imatch '\.zip(\\|$)') -or ($PSScriptRoot -match 'Rar\$')
+}
+
+# 숨김 실행되는 본체의 출력(Write-Host 포함)을 agent.log에 남긴다. 5MB가 넘으면 agent.log.old로 넘기고 새로 시작.
+function Start-AgentLog {
+    try {
+        $log = "$PSScriptRoot\agent.log"
+        if ((Test-Path $log) -and ((Get-Item $log).Length -gt 5MB)) { Move-Item $log "$log.old" -Force }
+        Start-Transcript -Path $log -Append -Force | Out-Null
+    } catch { }
+}
 
 # ─── 설정 ────────────────────────────────────────────────────────────────────
 
@@ -102,18 +146,75 @@ function Show-TerminalList {
 
 function Ensure-AutoStart {
     $taskName = "PointManagerAgent"
-    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($existing) { return }
+    $scriptPath = $PSCommandPath
+    $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
     try {
-        $scriptPath = $PSCommandPath
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+        # 이미 같은 경로로 등록돼 있으면 그대로 둔다. 폴더를 옮겼거나 등록이 사라졌으면 다시 등록한다.
+        $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            $cur = ($existing.Actions | Select-Object -First 1).Arguments
+            if ($cur -eq $taskArgs) { return }
+        }
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        # 관리자 권한(Highest)은 필요 없다 — 일반 권한으로 등록해야 관리자가 아닌 계정에서도 실패하지 않는다.
+        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
         Write-Host "다음 로그온부터 자동으로 시작되도록 등록했습니다." -ForegroundColor Green
     } catch {
-        Write-Host "자동시작 등록 실패(수동으로 다시 실행해야 할 수 있음): $_" -ForegroundColor Yellow
+        # 작업 스케줄러 등록이 막힌 PC — 시작프로그램 폴더 바로가기로 대신한다.
+        try {
+            $startup = [Environment]::GetFolderPath('Startup')
+            $lnkPath = Join-Path $startup "포인트 관리 프로그램.lnk"
+            $ws = New-Object -ComObject WScript.Shell
+            $lnk = $ws.CreateShortcut($lnkPath)
+            $lnk.TargetPath = "powershell.exe"
+            $lnk.Arguments = $taskArgs
+            $lnk.WindowStyle = 7
+            $lnk.Description = "포인트 관리 프로그램 자동 시작"
+            $lnk.Save()
+            Write-Host "다음 로그온부터 자동으로 시작되도록 시작프로그램에 등록했습니다." -ForegroundColor Green
+        } catch {
+            Write-Host "자동시작 등록 실패(컴퓨터를 켤 때마다 start.bat을 실행해야 할 수 있음): $_" -ForegroundColor Yellow
+        }
     }
+}
+
+# ─── 설치·실행 단계(start.bat이 -Setup으로 실행) ──────────────────────────────────
+# 여러 번 실행해도 안전하다: 이미 실행 중이면 새로 띄우지 않고, 이미 등록된 PC면 다시 등록하지 않는다.
+function Invoke-Setup {
+    Write-Host "=== 포인트 관리 프로그램 설치/실행 ===" -ForegroundColor Cyan
+
+    if (Test-TempFolder) {
+        Write-Host "이 폴더는 임시 위치(압축 미리보기/Temp)입니다. 압축을 지워지지 않는 폴더(예: C:\포인트관리)에 완전히 푼 뒤, 그 폴더의 start.bat을 실행해주세요." -ForegroundColor Red
+        return
+    }
+
+    $running = Test-AgentRunning
+
+    if (Load-Config) {
+        # 이미 등록된 PC — 다시 등록하지 않는다(남아 있는 1회용 설치 정보도 쓰지 않는다).
+        $c = Load-Config
+        if (Test-Path $ProvisionPath) { Remove-Item $ProvisionPath -Force -ErrorAction SilentlyContinue }
+        Write-Host "이미 등록된 포스기입니다 ($($c.storeName) / $($c.name))." -ForegroundColor Green
+        $firstTime = $false
+    } else {
+        Register-Terminal | Out-Null   # 실패하면 안내를 출력하고 종료한다
+        $firstTime = $true
+    }
+
+    Ensure-AutoStart
+
+    if ($running) {
+        Write-Host "프로그램이 이미 실행 중입니다. 다시 실행하지 않습니다 — 화면 오른쪽 아래 트레이의 '포인트 관리' 아이콘을 확인하세요." -ForegroundColor Green
+        return
+    }
+
+    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$PSCommandPath`"")
+    if ($firstTime) { $argList += "-ShowList" }
+    Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Hidden
+    Write-Host "포인트 관리 프로그램을 실행했습니다. 이 창은 닫아도 프로그램은 계속 실행됩니다." -ForegroundColor Green
+    if ($firstTime) { Write-Host "(처음 설치라면 기존 회원 포인트 이전에 시간이 걸릴 수 있습니다. 진행 기록: agent.log)" }
 }
 
 # ─── 챔프 DB 큐 테이블·트리거 최초 1회 자동 생성 (이미 있으면 건너뜀 — 계산원이 손댈 필요 없음) ──
@@ -152,11 +253,21 @@ END
     }
 }
 
-$isFirstRun = -not (Test-Path $ConfigPath)
+# start.bat은 -Setup으로 실행한다 — 설치·등록만 하고 본체를 숨김 실행한 뒤 끝난다.
+if ($Setup) { Invoke-Setup; exit 0 }
+
+# ── 여기부터 프로그램 본체 ── 한 PC에서 하나만 실행된다(중복 실행은 같은 결제 대기열을 두 번 처리해 포스 잔액이 이중 차감됨).
+if (-not (Enter-SingleInstance)) { exit 0 }
+Start-AgentLog
+
 $cfg = Load-Config
-if (-not $cfg) { $cfg = Register-Terminal }
+if (-not $cfg) {
+    # 설정 없이 본체가 직접 실행된 경우(구버전 방식) — 설치 정보로 등록한다.
+    $cfg = Register-Terminal
+    $ShowList = $true
+    Ensure-AutoStart
+}
 $AuthHeader = @{ Authorization = "Bearer $($cfg.apiKey)" }
-if ($isFirstRun) { Ensure-AutoStart }
 
 # ─── 챔프 DB 연결 ─────────────────────────────────────────────────────────────
 
@@ -474,7 +585,7 @@ $queueTimer.Add_Tick({
 $queueTimer.Start()
 
 # 방금 설치·등록한 직후라면 이 매장의 포스기 목록을 자동으로 한 번 보여준다.
-if ($isFirstRun) {
+if ($ShowList) {
     $Script:ListOnceTimer = New-Object System.Windows.Forms.Timer; $Script:ListOnceTimer.Interval = 1500
     $Script:ListOnceTimer.Add_Tick({ $Script:ListOnceTimer.Stop(); Show-TerminalList })
     $Script:ListOnceTimer.Start()

@@ -11,7 +11,15 @@ import { handleApiError } from "@/lib/api-utils";
 import { createZip, type ZipEntry } from "@/lib/zip";
 
 const AGENT_SRC_DIR = path.join(process.cwd(), "pos-agent-src");
-const AGENT_FILES = ["point-terminal-agent.ps1", "start.bat", "restore-bulk-import-backup.ps1", "pointmanager.ico"];
+const AGENT_FILES = [
+  "point-terminal-agent.ps1",
+  "start.bat",
+  "uninstall.bat",
+  "uninstall.ps1",
+  "restore.bat",
+  "restore-bulk-import-backup.ps1",
+  "pointmanager.ico",
+];
 
 // 매장 포스 프로그램 다운로드 — 로그인한 매장 관리자(또는 ?storeId=로 들어온 운영자·소유자)만.
 // 요청할 때마다 이 매장 전용 1회용 설치 토큰을 새로 만들어 설정파일(provision.json)에 내장한
