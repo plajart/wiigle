@@ -13,27 +13,23 @@
 # 전제: DSN=CHAMP(Sybase ASA 8.0, dba/sql) ODBC 연결이 이 PC에 이미 설정되어 있어야 함.
 # 설계 문서: /root/projects/point-manager/docs/design-and-implementation-log.md
 #
-# 설치·최초 실행 안내(계산원용): 이 폴더를 통째로 이 PC에 두고 "start.bat"을 더블클릭하세요.
-# 매장의 첫 단말이면 처음 한 번만 매장 대시보드에서 받은 6자리 등록코드를 입력합니다(자동으로
-# 대표 포스기가 됩니다). 두 번째 단말부터는 코드를 몰라도 됩니다 — 대표 포스기의 관리모드
-# 화면(같은 LAN)에 "발견된 포스기" 목록이 뜨고, 거기서 "등록" 버튼만 누르면 됩니다. 그 외
-# 나머지(챔프 DB 준비, 다음부터 컴퓨터를 켤 때마다 자동 시작)는 전부 자동으로 됩니다.
+# 설치·최초 실행 안내(계산원용): 매장 관리자가 카운터 PC의 브라우저에서 홈페이지에 로그인해 매장
+# 관리모드의 "포스기 다운로드"를 누르면, 그 매장 전용 설치 정보가 담긴 압축파일이 받아집니다.
+# 압축을 풀고 "start.bat"을 더블클릭하면 인증코드 입력 없이 설치·등록·초기화가 자동으로 끝나고,
+# 이 매장의 포스기 목록이 창으로 표시됩니다(매장의 첫 단말은 자동으로 대표 포스기). 이후 컴퓨터를
+# 켤 때마다 자동으로 시작됩니다. 챔프 DB 준비도 전부 자동입니다.
 
 param(
     [string]$BaseUrl = "https://concrab.com",
     [string]$ConfigPath = "$PSScriptRoot\terminal-config.json",
     [int]$QueuePollSec = 3,
-    [int]$SwapTimeoutSec = 180,  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
-    [int]$LocalHttpPort = 58787, # 같은 LAN의 대표 포스기 관리화면이 이 단말과 대화하는 포트(등록 안내·발견 목록)
-    [int]$DiscoveryUdpPort = 58788, # 같은 LAN에서 서로를 찾는 UDP 방송 포트
-    [int]$DiscoveryIntervalSec = 5
+    [int]$SwapTimeoutSec = 180  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$Script:MyInstanceId = [Guid]::NewGuid().ToString()  # LAN 방송에서 내가 보낸 것을 나한테서 다시 받았을 때 걸러내기 위한 값
 
 # ─── 설정 ────────────────────────────────────────────────────────────────────
 
@@ -43,82 +39,64 @@ function Load-Config {
 }
 function Save-Config($cfg) { $cfg | ConvertTo-Json | Out-File -Encoding UTF8 $ConfigPath }
 
-function Complete-Registration([string]$code, [string]$name) {
-    $body = @{ code = $code; terminalName = $name } | ConvertTo-Json
-    $res = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/pos/terminals/register" -ContentType "application/json" -Body $body
-    $cfg = @{ terminalId = $res.terminalId; apiKey = $res.apiKey; name = $name; baseUrl = $BaseUrl; isPrimary = [bool]$res.isPrimary }
-    Save-Config $cfg
-    return $cfg
-}
+
+# 다운로드한 압축파일에는 매장별 1회용 설치 토큰이 든 provision.json이 함께 들어 있다. 이 토큰으로
+# 사람이 아무것도 입력하지 않아도 이 컴퓨터가 스스로 그 매장의 포스기로 등록된다(첫 단말은 자동으로
+# 대표 포스기). 토큰은 등록에 성공하면 서버에서 소모되고, 이 파일도 지운다.
+$ProvisionPath = "$PSScriptRoot\provision.json"
 
 function Register-Terminal {
-    $name = $env:COMPUTERNAME  # 단말 이름은 묻지 않고 컴퓨터 이름을 그대로 쓴다(설치 단계 하나 더 줄임)
-
-    # 두 번째 이후 단말이면, 이미 켜져 있는 대표 포스기가 같은 LAN에서 자동으로 등록을
-    # 완성해줄 수 있다 — 잠깐 기다려보고, 안 되면(첫 단말이거나 대표가 아직 없음) 코드를
-    # 직접 입력하는 방식으로 넘어간다(유일하게 손이 가는 단계).
-    Write-Host "이 매장에 이미 등록된 포스기(대표 포스기)가 있으면, 그 포스기의 관리모드 화면에서"
-    Write-Host "이 컴퓨터('$name')를 찾아 '등록'을 눌러주세요 — 20초간 기다립니다..."
-
-    $listener = $null
-    $pendingCtx = $null
-    try {
-        $listener = New-Object System.Net.HttpListener
-        $listener.Prefixes.Add("http://+:$LocalHttpPort/")
-        $listener.Start()
-        # HttpListener에는 Pending() 메서드가 없다(TcpListener와 다름, 2026-09-29 확인된 버그) —
-        # BeginGetContext로 비동기 대기를 걸어두고 AsyncWaitHandle.WaitOne(0)으로 "요청 도착했는지"만
-        # 논블로킹으로 확인하는 방식으로 대체.
-        $pendingCtx = $listener.BeginGetContext($null, $null)
-    } catch { $listener = $null }
-
-    $udp = $null
-    try { $udp = New-Object System.Net.Sockets.UdpClient; $udp.EnableBroadcast = $true } catch { }
-
-    $deadline = (Get-Date).AddSeconds(20)
-    $cfg = $null
-    while ((Get-Date) -lt $deadline -and -not $cfg) {
-        if ($udp) {
-            try {
-                $payload = @{ instanceId = $Script:MyInstanceId; name = $name; isPrimary = $false; registered = $false } | ConvertTo-Json -Compress
-                $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-                $udp.Send($bytes, $bytes.Length, "255.255.255.255", $DiscoveryUdpPort) | Out-Null
-            } catch { }
-        }
-        if ($listener -and $pendingCtx -and $pendingCtx.AsyncWaitHandle.WaitOne(0)) {
-            $ctx = $listener.EndGetContext($pendingCtx)
-            $pendingCtx = $listener.BeginGetContext($null, $null)
-            $ok = $false
-            if ($ctx.Request.Url.AbsolutePath -eq "/apply-code" -and $ctx.Request.HttpMethod -eq "POST") {
-                $reader = New-Object System.IO.StreamReader($ctx.Request.InputStream)
-                $body = $reader.ReadToEnd() | ConvertFrom-Json
-                try { $cfg = Complete-Registration -code $body.code -name $name; $ok = $true }
-                catch { Write-Host "원격 등록코드 적용 실패: $_" -ForegroundColor Red }
-            }
-            $buf = [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ ok = $ok }))
-            try { $ctx.Response.OutputStream.Write($buf, 0, $buf.Length) } catch { }
-            $ctx.Response.OutputStream.Close()
-        }
-        if (-not $cfg) { Start-Sleep -Milliseconds 500 }
-    }
-    if ($udp) { $udp.Close() }
-    if ($listener) { $listener.Stop() }
-
-    if ($cfg) {
-        Write-Host "대표 포스기가 자동으로 등록을 완료해줬습니다." -ForegroundColor Green
-        return $cfg
-    }
-
-    $code = Read-Host "자동으로 등록되지 않았습니다. 매장 대시보드(POS 터미널 등록)에서 발급한 6자리 코드를 입력하세요"
-    try {
-        $cfg = Complete-Registration -code $code -name $name
-    } catch {
-        Write-Host "등록 실패: $_" -ForegroundColor Red
+    $name = $env:COMPUTERNAME  # 단말 이름은 묻지 않고 컴퓨터 이름을 그대로 쓴다
+    if (-not (Test-Path $ProvisionPath)) {
+        Write-Host "설치 정보(provision.json)가 없습니다. 포인트 관리 홈페이지의 매장 관리모드에서 포스기를 다시 다운로드해 새로 설치해주세요." -ForegroundColor Red
         exit 1
     }
-    Write-Host "등록 완료 — 이제부터 이 단말이 매장 대시보드에 '가동중'으로 표시됩니다." -ForegroundColor Green
-    return $cfg
+    $prov = Get-Content $ProvisionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($prov.baseUrl) { $Script:BaseUrl = $prov.baseUrl }
+
+    try {
+        $body = @{ token = $prov.token; terminalName = $name } | ConvertTo-Json
+        $res = Invoke-RestMethod -Method Post -Uri "$Script:BaseUrl/api/v1/pos/agent/register" -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+    } catch {
+        Write-Host "등록 실패: $_" -ForegroundColor Red
+        Write-Host "이미 사용했거나 24시간이 지난 설치 파일일 수 있습니다. 홈페이지에서 포스기를 다시 다운로드해주세요." -ForegroundColor Yellow
+        exit 1
+    }
+    $cfg = @{ terminalId = $res.terminalId; apiKey = $res.apiKey; name = $name; baseUrl = $Script:BaseUrl; isPrimary = [bool]$res.isPrimary; storeName = $res.storeName }
+    Save-Config $cfg
+    Remove-Item $ProvisionPath -Force -ErrorAction SilentlyContinue
+    Write-Host "등록 완료 — '$($res.storeName)' 매장의 포스기로 연결되었습니다." -ForegroundColor Green
+    return ($cfg | ConvertTo-Json | ConvertFrom-Json)
 }
+
+# 이 매장에 등록된 포스기 목록을 창으로 보여준다(설치 직후 자동으로 한 번, 이후엔 트레이 메뉴에서).
+function Show-TerminalList {
+    try {
+        $res = Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos/agent/terminals" -Headers $AuthHeader
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("포스기 목록을 불러오지 못했습니다.`n$_", "포인트 관리 프로그램") | Out-Null
+        return
+    }
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "포스기 목록 — $($cfg.storeName)"; $form.Width = 460; $form.Height = 360; $form.StartPosition = "CenterScreen"
+    $form.TopMost = $true; $form.FormBorderStyle = "FixedDialog"
+    $list = New-Object System.Windows.Forms.ListBox
+    $list.Location = New-Object System.Drawing.Point(15, 15); $list.Width = 415; $list.Height = 260
+    $list.Font = New-Object System.Drawing.Font("맑은 고딕", 11)
+    foreach ($t in $res.terminals) {
+        $tags = @()
+        if ($t.isPrimary) { $tags += "대표" }
+        if ($t.isSelf) { $tags += "이 컴퓨터" }
+        $state = if ($t.online) { "가동중" } else { "오프라인" }
+        $tagText = if ($tags.Count -gt 0) { " [" + ($tags -join ", ") + "]" } else { "" }
+        $list.Items.Add("$($t.name)$tagText — $state") | Out-Null
+    }
+    $btnClose = New-Object System.Windows.Forms.Button; $btnClose.Text = "닫기"; $btnClose.Location = New-Object System.Drawing.Point(15, 285); $btnClose.Width = 415
+    $btnClose.Add_Click({ $form.Close() })
+    $form.Controls.AddRange(@($list, $btnClose))
+    $form.ShowDialog() | Out-Null
+}
+
 
 # ─── 부팅/로그온 시 자동 시작 등록 (최초 실행 때 1회, 재부팅해도 사람이 다시 실행할 필요 없게) ──
 
@@ -323,121 +301,6 @@ function Send-Heartbeat {
     }
 }
 
-# ─── 같은 매장 내 다른 포스기를 LAN에서 찾아 등록하기 (2026-09-27, 코드 직접입력 대체) ──
-# 미등록 단말은 "나 여기 있음"을 UDP로 방송하고, 대표 포스기는 그 방송을 모아뒀다가
-# 관리모드 화면(같은 PC의 브라우저)이 로컬로 물어보면 목록을 보여준다. 관리자가 "등록"을
-# 누르면 대표 포스기가 서버에서 코드를 대신 받아 그 단말에게 직접(LAN, 브라우저 안 거침)
-# 전달해 등록을 완성시킨다 — 계산원이 코드를 몰라도 되게 하는 게 목적.
-
-$Script:Peers = @{}  # ip -> @{ name; isPrimary; registered; lastSeen }
-
-function Start-DiscoveryAnnounce {
-    $Script:AnnounceTimer = New-Object System.Windows.Forms.Timer
-    $Script:AnnounceTimer.Interval = $DiscoveryIntervalSec * 1000
-    $Script:AnnounceTimer.Add_Tick({
-        try {
-            $udp = New-Object System.Net.Sockets.UdpClient
-            $udp.EnableBroadcast = $true
-            $payload = @{ instanceId = $Script:MyInstanceId; name = $cfg.name; isPrimary = $Script:IsPrimary; registered = $true } | ConvertTo-Json -Compress
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-            $udp.Send($bytes, $bytes.Length, "255.255.255.255", $DiscoveryUdpPort) | Out-Null
-            $udp.Close()
-        } catch { }
-    })
-    $Script:AnnounceTimer.Start()
-}
-
-function Start-DiscoveryListener {
-    try {
-        $Script:UdpListener = New-Object System.Net.Sockets.UdpClient($DiscoveryUdpPort)
-        $Script:UdpListener.Client.SetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::ReuseAddress, $true)
-    } catch {
-        Write-Host "LAN 탐색 수신 실패(다른 프로그램이 포트를 쓰는 중일 수 있음): $_" -ForegroundColor Yellow
-        return
-    }
-    $Script:DiscoveryPollTimer = New-Object System.Windows.Forms.Timer
-    $Script:DiscoveryPollTimer.Interval = 1000
-    $Script:DiscoveryPollTimer.Add_Tick({
-        while ($Script:UdpListener.Available -gt 0) {
-            $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-            $bytes = $Script:UdpListener.Receive([ref]$remote)
-            try {
-                $msg = [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
-                if ($msg.instanceId -eq $Script:MyInstanceId) { continue } # 내가 보낸 걸 나한테서 받은 경우 무시
-                $Script:Peers[$remote.Address.ToString()] = @{ name = $msg.name; isPrimary = $msg.isPrimary; registered = $msg.registered; lastSeen = Get-Date }
-            } catch { }
-        }
-        # 30초 넘게 소식 없으면 목록에서 제거(꺼진 단말)
-        foreach ($ip in @($Script:Peers.Keys)) {
-            if (((Get-Date) - $Script:Peers[$ip].lastSeen).TotalSeconds -gt 30) { $Script:Peers.Remove($ip) }
-        }
-    })
-    $Script:DiscoveryPollTimer.Start()
-}
-
-# 대표 포스기만 로컬 HTTP를 연다 — 같은 PC의 관리모드 브라우저 화면이 여기로 물어본다.
-# 관리자 권한이 없으면 0.0.0.0 바인딩이 막힐 수 있어(그러면 발견 목록 기능만 빠짐) 실패해도
-# 나머지 기능(적립·사용·하트비트)은 그대로 동작하게 try/catch로 감싼다.
-function Start-LocalHttpApi {
-    try {
-        $Script:HttpListener = New-Object System.Net.HttpListener
-        $Script:HttpListener.Prefixes.Add("http://+:$LocalHttpPort/")
-        $Script:HttpListener.Start()
-        # HttpListener에는 Pending() 메서드가 없다(TcpListener와 다름, 2026-09-29 확인된 버그) —
-        # BeginGetContext/EndGetContext + AsyncWaitHandle.WaitOne(0)의 논블로킹 패턴으로 대체.
-        $Script:HttpPendingCtx = $Script:HttpListener.BeginGetContext($null, $null)
-    } catch {
-        Write-Host "로컬 관리 API 시작 실패(발견 목록 기능만 빠짐, 관리자 권한으로 재실행하면 됩니다): $_" -ForegroundColor Yellow
-        return
-    }
-    $Script:HttpPollTimer = New-Object System.Windows.Forms.Timer
-    $Script:HttpPollTimer.Interval = 300
-    $Script:HttpPollTimer.Add_Tick({
-        while ($Script:HttpListener.IsListening -and $Script:HttpPendingCtx -and $Script:HttpPendingCtx.AsyncWaitHandle.WaitOne(0)) {
-            $ctx = $Script:HttpListener.EndGetContext($Script:HttpPendingCtx)
-            $Script:HttpPendingCtx = $Script:HttpListener.BeginGetContext($null, $null)
-            try {
-                $ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*")
-                if ($ctx.Request.Url.AbsolutePath -eq "/discovered" -and $ctx.Request.HttpMethod -eq "GET") {
-                    $list = @($Script:Peers.GetEnumerator() | Where-Object { -not $_.Value.registered } | ForEach-Object {
-                        @{ ip = $_.Key; name = $_.Value.name }
-                    })
-                    $json = ConvertTo-Json @{ isPrimary = $Script:IsPrimary; peers = $list } -Depth 4
-                    $buf = [System.Text.Encoding]::UTF8.GetBytes($json)
-                    $ctx.Response.ContentType = "application/json"
-                    $ctx.Response.OutputStream.Write($buf, 0, $buf.Length)
-                } elseif ($ctx.Request.Url.AbsolutePath -eq "/register-peer" -and $ctx.Request.HttpMethod -eq "POST") {
-                    $reader = New-Object System.IO.StreamReader($ctx.Request.InputStream)
-                    $body = $reader.ReadToEnd() | ConvertFrom-Json
-                    $ok = Register-PeerByIp -targetIp $body.ip
-                    $buf = [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ ok = $ok }))
-                    $ctx.Response.ContentType = "application/json"
-                    $ctx.Response.OutputStream.Write($buf, 0, $buf.Length)
-                } else {
-                    $ctx.Response.StatusCode = 404
-                }
-            } catch {
-                $ctx.Response.StatusCode = 500
-            } finally {
-                $ctx.Response.OutputStream.Close()
-            }
-        }
-    })
-    $Script:HttpPollTimer.Start()
-}
-
-# 대표 포스기 쪽: 관리모드 화면에서 "등록" 클릭 → 서버에서 코드를 대신 받아 그 단말(LAN, IP로 직접)에 전달
-function Register-PeerByIp([string]$targetIp) {
-    try {
-        $codeRes = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/pairing-code" -Headers $AuthHeader
-        Invoke-RestMethod -Method Post -Uri "http://${targetIp}:${LocalHttpPort}/apply-code" -ContentType "application/json" `
-            -Body (@{ code = $codeRes.code } | ConvertTo-Json) -TimeoutSec 10 | Out-Null
-        return $true
-    } catch {
-        Write-Host "원격 등록 전달 실패($targetIp): $_" -ForegroundColor Red
-        return $false
-    }
-}
 
 # ─── 사용(REDEEM) 팝업 — 스왑 대기 목록: MEM_NO -> {original=원래 로컬값, at=스왑 시각} ──
 
@@ -588,6 +451,8 @@ $trayIcon.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $itemRedeem = $menu.Items.Add("포인트 사용...")
 $itemRedeem.Add_Click({ Show-RedeemPopup })
+$itemList = $menu.Items.Add("포스기 목록...")
+$itemList.Add_Click({ Show-TerminalList })
 $itemExit = $menu.Items.Add("종료")
 $itemExit.Add_Click({ $trayIcon.Visible = $false; [System.Windows.Forms.Application]::Exit() })
 $trayIcon.ContextMenuStrip = $menu
@@ -608,9 +473,11 @@ $queueTimer.Add_Tick({
 })
 $queueTimer.Start()
 
-# LAN 안의 다른 포스기를 찾고(모든 단말) 대표 포스기면 등록 창구를 연다.
-Start-DiscoveryAnnounce
-Start-DiscoveryListener
-Start-LocalHttpApi
+# 방금 설치·등록한 직후라면 이 매장의 포스기 목록을 자동으로 한 번 보여준다.
+if ($isFirstRun) {
+    $Script:ListOnceTimer = New-Object System.Windows.Forms.Timer; $Script:ListOnceTimer.Interval = 1500
+    $Script:ListOnceTimer.Add_Tick({ $Script:ListOnceTimer.Stop(); Show-TerminalList })
+    $Script:ListOnceTimer.Start()
+}
 
 [System.Windows.Forms.Application]::Run()
