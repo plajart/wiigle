@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { requireHqAdmin } from "@/lib/rbac";
+import { requireCompanyAdmin, assertStoreScope } from "@/lib/rbac";
 import Store from "@/lib/models/Store";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
@@ -9,8 +9,9 @@ import { handleApiError } from "@/lib/api-utils";
 export async function PUT(req: Request, { params }: { params: Promise<{ storeId: string }> }) {
   try {
     await dbConnect();
-    const session = await requireHqAdmin();
+    const session = await requireCompanyAdmin();
     const { storeId } = await params;
+    await assertStoreScope(session, storeId);
     const { baseUrl, apiKey } = await req.json();
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });

@@ -27,7 +27,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ storeId
 
     await AuditLog.create({
       storeId,
-      actorType: session.isHqAdmin ? "HQ_ADMIN" : "STORE_ADMIN",
+      actorType: session.role === "owner" || session.role === "admin" ? "HQ_ADMIN" : "STORE_ADMIN",
       actorId: session.sub,
       action: "VENDOR_SUMMARY_FETCH",
       scope: "read_balance",

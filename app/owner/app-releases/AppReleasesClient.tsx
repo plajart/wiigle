@@ -13,7 +13,7 @@ export default function AppReleasesClient() {
   const [message, setMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/v1/hq/app-versions");
+    const res = await fetch("/api/v1/owner/app-versions");
     const data = await res.json();
     setVersions(res.ok ? data.versions : []);
   }, []);
@@ -32,7 +32,7 @@ export default function AppReleasesClient() {
       form.append("apk", file);
       form.append("versionName", versionName);
       form.append("changelog", changelog);
-      const res = await fetch("/api/v1/hq/app-versions", { method: "POST", body: form });
+      const res = await fetch("/api/v1/owner/app-versions", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) {
         setMessage(`업로드 실패: ${data.error}`);

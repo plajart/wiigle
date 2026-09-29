@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { requireHqAdmin } from "@/lib/rbac";
+import { requireCompanyAdmin } from "@/lib/rbac";
 import { grantHqPoints, lookupCustomerByPhone } from "@/lib/points";
 import { handleApiError } from "@/lib/api-utils";
 
 export async function POST(req: Request) {
   try {
     await dbConnect();
-    const session = await requireHqAdmin();
+    const session = await requireCompanyAdmin();
     const { customerPhone, amount, reason } = await req.json();
     if (!customerPhone || !amount) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
 

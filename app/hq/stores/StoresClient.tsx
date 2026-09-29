@@ -25,7 +25,7 @@ export default function StoresClient() {
         setCreateMsg({ text: `생성 실패: ${data.error}`, ok: false });
       } else {
         setCreateMsg({
-          text: `매장 생성 완료. 매장 관리자 임시 비밀번호: ${data.storeAdmin.tempPassword} — 안전하게 전달 후 최초 로그인 시 변경을 안내해주세요.`,
+          text: `매장 생성 완료. 매장 관리자 임시 비밀번호: ${data.storeManager.tempPassword} — 안전하게 전달 후 최초 로그인 시 변경을 안내해주세요.`,
           ok: true,
         });
         setStoreName("");

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { dbConnect } from "@/lib/mongodb";
-import { requireHqAdmin } from "@/lib/rbac";
+import { requireOwner } from "@/lib/rbac";
 import AppVersion from "@/lib/models/AppVersion";
 import { handleApiError } from "@/lib/api-utils";
 
@@ -13,7 +13,7 @@ const RELEASES_DIR = path.join(process.cwd(), "uploads", "app-releases");
 export async function POST(req: Request) {
   try {
     await dbConnect();
-    const session = await requireHqAdmin();
+    const session = await requireOwner();
 
     const form = await req.formData();
     const file = form.get("apk");
@@ -53,7 +53,7 @@ export async function POST(req: Request) {
 export async function GET() {
   try {
     await dbConnect();
-    await requireHqAdmin();
+    await requireOwner();
     const versions = await AppVersion.find({ platform: "android" }).sort({ versionCode: -1 }).limit(20).lean();
     return NextResponse.json({
       versions: versions.map((v) => ({

@@ -6,7 +6,7 @@ const ITEMS = [
   { href: "/store", label: "대시보드", icon: "▤" },
   { href: "/pos", label: "POS 결제 터미널", icon: "◎" },
   { href: "/store/qr", label: "가입 안내 QR", icon: "▦" },
-  { href: "/store/terminals", label: "POS 터미널 등록", icon: "⌘" },
+  { href: "/store/terminals", label: "포스기 다운로드", icon: "⌘" },
   { href: "/store/settlement", label: "일일 정산", icon: "▧" },
   { href: "/store/consent", label: "POS 연동 동의", icon: "⚙" },
   { href: "/store/audit-log", label: "연동 활동 로그", icon: "≡" },

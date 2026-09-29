@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import crypto from "crypto";
+import { dbConnect } from "@/lib/mongodb";
+import PosProvisionToken, { hashProvisionToken } from "@/lib/models/PosProvisionToken";
+import PosTerminal from "@/lib/models/PosTerminal";
+import Store from "@/lib/models/Store";
+import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
+
+// 다운로드한 포스 프로그램이 처음 실행될 때, 압축파일에 내장된 1회용 설치 토큰으로 스스로를
+// 이 매장의 단말로 등록한다(사람이 입력하는 인증코드 없음). 토큰은 256비트 난수라 추측이
+// 불가능하지만, 잘못된 요청을 반복하는 것을 막기 위해 IP당 요청빈도는 제한한다.
+export async function POST(req: Request) {
+  try {
+    rateLimit(`agent-register:${clientIp(req)}`, 20, 10 * 60 * 1000);
+
+    await dbConnect();
+    const { token, terminalName } = await req.json();
+    if (!token || !terminalName) {
+      return NextResponse.json({ error: "TOKEN_AND_NAME_REQUIRED" }, { status: 400 });
+    }
+
+    // 조회와 삭제를 한 번에(원자적) — 같은 토큰으로 동시에 두 번 등록되는 것을 막는다.
+    const provision = await PosProvisionToken.findOneAndDelete({ tokenHash: hashProvisionToken(String(token)) });
+    if (!provision) return NextResponse.json({ error: "INVALID_OR_EXPIRED_TOKEN" }, { status: 404 });
+
+    const store = await Store.findById(provision.storeId).select("name").lean();
+    if (!store) return NextResponse.json({ error: "STORE_NOT_FOUND" }, { status: 404 });
+
+    // 이 매장에 등록되는 첫 단말이면 자동으로 대표 포스기가 된다.
+    const isFirstTerminal = (await PosTerminal.countDocuments({ storeId: provision.storeId, status: "ACTIVE" })) === 0;
+
+    const apiKey = crypto.randomBytes(24).toString("hex");
+    const terminal = await PosTerminal.create({
+      storeId: provision.storeId,
+      name: String(terminalName).slice(0, 100),
+      apiKey,
+      status: "ACTIVE",
+      lastSeenAt: new Date(),
+      isPrimary: isFirstTerminal,
+    });
+
+    return NextResponse.json({
+      ok: true,
+      terminalId: terminal._id,
+      apiKey,
+      isPrimary: isFirstTerminal,
+      storeName: store.name,
+    });
+  } catch (e) {
+    return handleApiError(e);
+  }
+}
