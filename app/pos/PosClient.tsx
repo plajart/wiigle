@@ -14,7 +14,7 @@ export default function PosClient() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  const [saleAmount, setSaleAmount] = useState("");
+  const [earnInput, setEarnInput] = useState("");
   const [earnError, setEarnError] = useState<string | null>(null);
   const [earnResult, setEarnResult] = useState<{ earnAmount: number } | null>(null);
   const [earnLoading, setEarnLoading] = useState(false);
@@ -80,7 +80,7 @@ export default function PosClient() {
       const res = await fetch("/api/v1/pos/earn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerPhone: phone, saleAmount: Number(saleAmount), clientTxnId: earnTxnId }),
+        body: JSON.stringify({ customerPhone: phone, earnAmount: Number(earnInput), clientTxnId: earnTxnId }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -88,7 +88,7 @@ export default function PosClient() {
         return;
       }
       setEarnResult(data);
-      setSaleAmount("");
+      setEarnInput("");
       setEarnTxnId(crypto.randomUUID()); // 성공했으니 다음 적립을 위한 새 멱등키 발급
     } finally {
       setEarnLoading(false);
@@ -158,11 +158,11 @@ export default function PosClient() {
           <div className="card">
             <div className="card-title">포인트 적립</div>
             <p className="faint" style={{ marginBottom: 12 }}>
-              결제가 끝난 뒤 실제 결제금액을 입력하면, 매장에 설정된 적립률만큼 이 자리에서 바로 적립됩니다.
+              포스기 프로그램이 자동으로 적립하지 못한 경우에만 쓰는 보조 기능입니다. 적립할 포인트를 직접 입력하면 이 자리에서 바로 적립됩니다(적립 비율은 포스기 프로그램에서 관리합니다).
             </p>
             <form onSubmit={earn}>
-              <label>결제 금액</label>
-              <input type="number" min={1} value={saleAmount} onChange={(e) => setSaleAmount(e.target.value)} required />
+              <label>적립할 포인트</label>
+              <input type="number" min={1} value={earnInput} onChange={(e) => setEarnInput(e.target.value)} required />
               <button type="submit" className="full secondary" disabled={earnLoading}>
                 {earnLoading ? "처리 중..." : "적립 확정"}
               </button>

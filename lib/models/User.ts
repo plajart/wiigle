@@ -22,7 +22,7 @@ export type UserRole = "owner" | "admin" | "manager" | "user";
 export interface IUser {
   _id: Types.ObjectId;
   phone: string;
-  passwordHash: string;
+  passwordHash: string; // ""이면 아직 비밀번호를 정하지 않은 계정(매장에서 포인트가 적립돼 만들어진 손님) — 첫 로그인 때 비워두고 들어와 정한다
   name: string;
   role: UserRole;
   companyAdminOf?: Types.ObjectId; // role="admin"일 때 — 관리하는 고객사(본사)
@@ -38,7 +38,7 @@ export interface IUser {
 
 const UserSchema = new Schema<IUser>({
   phone: { type: String, required: true, unique: true },
-  passwordHash: { type: String, required: true },
+  passwordHash: { type: String, default: "" },
   name: { type: String, required: true },
   role: { type: String, enum: ["owner", "admin", "manager", "user"], default: "user" },
   companyAdminOf: { type: Schema.Types.ObjectId, ref: "Company" },

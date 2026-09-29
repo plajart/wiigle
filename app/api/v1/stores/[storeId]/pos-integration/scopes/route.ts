@@ -13,9 +13,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ storeId
     const { storeId } = await params;
     const session = await requireSession();
     await assertStoreScope(session, storeId);
-    const store = await Store.findById(storeId).select("posIntegration pointPolicy").lean();
+    const store = await Store.findById(storeId).select("posIntegration").lean();
     if (!store) return NextResponse.json({ error: "STORE_NOT_FOUND" }, { status: 404 });
-    return NextResponse.json({ posIntegration: store.posIntegration, pointPolicy: store.pointPolicy ?? { earnRate: 0.03 } });
+    return NextResponse.json({ posIntegration: store.posIntegration });
   } catch (e) {
     return handleApiError(e);
   }
@@ -29,24 +29,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ storeId:
     const session = await requireSession();
     await assertStoreScope(session, storeId);
 
-    const { scopes, earnRate } = await req.json();
+    const { scopes } = await req.json();
     if (!Array.isArray(scopes) || scopes.some((s) => !VALID_SCOPES.includes(s))) {
       return NextResponse.json({ error: "INVALID_SCOPES" }, { status: 400 });
     }
-    if (earnRate !== undefined && (typeof earnRate !== "number" || earnRate < 0 || earnRate > 1)) {
-      return NextResponse.json({ error: "INVALID_EARN_RATE" }, { status: 400 });
-    }
 
-    const update: Record<string, unknown> = {
-      posIntegration: {
-        scopes,
-        grantedBy: session.sub,
-        grantedAt: new Date(),
-      },
-    };
-    if (earnRate !== undefined) update.pointPolicy = { earnRate };
-
-    const store = await Store.findByIdAndUpdate(storeId, update, { new: true });
+    const store = await Store.findByIdAndUpdate(
+      storeId,
+      { posIntegration: { scopes, grantedBy: session.sub, grantedAt: new Date() } },
+      { new: true }
+    );
     if (!store) return NextResponse.json({ error: "STORE_NOT_FOUND" }, { status: 404 });
 
     await AuditLog.create({
@@ -54,10 +46,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ storeId:
       actorType: session.role === "owner" || session.role === "admin" ? "HQ_ADMIN" : "STORE_ADMIN",
       actorId: session.sub,
       action: "POS_SCOPE_UPDATE",
-      meta: { scopes, earnRate },
+      meta: { scopes },
     });
 
-    return NextResponse.json({ ok: true, posIntegration: store.posIntegration, pointPolicy: store.pointPolicy });
+    return NextResponse.json({ ok: true, posIntegration: store.posIntegration });
   } catch (e) {
     return handleApiError(e);
   }

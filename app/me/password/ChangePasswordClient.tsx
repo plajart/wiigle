@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const ERRORS: Record<string, string> = {
   WRONG_CURRENT_PASSWORD: "현재 비밀번호가 맞지 않습니다.",
@@ -16,6 +17,14 @@ export default function ChangePasswordClient() {
   const [confirm, setConfirm] = useState("");
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [firstTime, setFirstTime] = useState(false); // 비밀번호를 아직 정하지 않고 들어온 경우
+  const router = useRouter();
+
+  useEffect(() => {
+    fetch("/api/v1/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setFirstTime(d?.session?.pwUnset === true));
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,6 +48,11 @@ export default function ChangePasswordClient() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirm("");
+      if (firstTime) {
+        router.push("/me");
+        router.refresh();
+        return;
+      }
       setMsg({ text: "비밀번호를 변경했습니다.", ok: true });
     } finally {
       setBusy(false);
@@ -49,17 +63,21 @@ export default function ChangePasswordClient() {
     <div>
       <div className="page-header">
         <div className="eyebrow">내 정보</div>
-        <h1>비밀번호 변경</h1>
+        <h1>{firstTime ? "비밀번호 정하기" : "비밀번호 변경"}</h1>
         <div className="desc">
-          현재 비밀번호를 모른다면 로그아웃 후 로그인 화면의 &ldquo;비밀번호를 잊으셨나요?&rdquo;를 이용하세요.
+          {firstTime
+            ? "처음 로그인하셨습니다. 앞으로 로그인할 때 사용할 비밀번호를 정해주세요(8자 이상)."
+            : "현재 비밀번호를 모른다면 로그아웃 후 로그인 화면의 \u201c비밀번호를 잊으셨나요?\u201d를 이용하세요."}
         </div>
       </div>
       <div className="card">
         <form onSubmit={onSubmit}>
-          <div className="field">
-            <label>현재 비밀번호</label>
-            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
-          </div>
+          {!firstTime && (
+            <div className="field">
+              <label>현재 비밀번호</label>
+              <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+            </div>
+          )}
           <div className="field">
             <label>새 비밀번호 (8자 이상)</label>
             <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={8} required />
@@ -69,7 +87,7 @@ export default function ChangePasswordClient() {
             <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8} required />
           </div>
           <button type="submit" disabled={busy}>
-            {busy ? "변경 중..." : "비밀번호 변경"}
+            {busy ? "저장 중..." : firstTime ? "비밀번호 정하기" : "비밀번호 변경"}
           </button>
         </form>
         {msg && <p className={msg.ok ? "muted" : "error"}>{msg.text}</p>}

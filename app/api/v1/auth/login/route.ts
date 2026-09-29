@@ -2,21 +2,38 @@ import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import User from "@/lib/models/User";
 import { verifyPassword, signSession, SESSION_COOKIE } from "@/lib/auth";
+import { normalizePhone } from "@/lib/password";
 import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
 
 // 비밀번호 무차별 대입 방어(2026-09-29 보안점검) — IP당, 그리고 특정 전화번호를 노린
 // 공격까지 같이 막기 위해 전화번호당으로도 제한한다.
+//
+// 매장에서 포인트가 적립되며 만들어진 손님 계정은 비밀번호가 비어 있다(passwordHash=""). 그런
+// 계정은 전화번호만 넣고 비밀번호를 비워 두면 로그인되고, 곧바로 비밀번호를 정하게 안내한다.
+// 이 예외는 일반 고객(role=user) 계정에만 적용된다 — 소유자·운영자·매장 관리자는 항상 비밀번호가 필요.
 export async function POST(req: Request) {
   try {
     await dbConnect();
     const { phone, password } = await req.json();
-    if (!phone || !password) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
+    if (!phone) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
+    const pw = typeof password === "string" ? password : "";
 
     rateLimit(`login-ip:${clientIp(req)}`, 20, 10 * 60 * 1000);
     rateLimit(`login-phone:${phone}`, 10, 10 * 60 * 1000);
 
-    const user = await User.findOne({ phone });
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    // 하이픈 등을 넣어 입력해도 찾을 수 있게(가입 때 입력한 그대로 저장된 번호도 함께 조회)
+    const user = await User.findOne({ phone: { $in: [String(phone), normalizePhone(phone)] } });
+    let ok = false;
+    let pwUnset = false;
+    if (user) {
+      if (!user.passwordHash) {
+        ok = user.role === "user" && pw === "";
+        pwUnset = ok;
+      } else {
+        ok = pw !== "" && (await verifyPassword(pw, user.passwordHash));
+      }
+    }
+    if (!user || !ok) {
       return NextResponse.json({ error: "INVALID_CREDENTIALS" }, { status: 401 });
     }
 
@@ -26,12 +43,14 @@ export async function POST(req: Request) {
       companyAdminOf: user.companyAdminOf ? String(user.companyAdminOf) : undefined,
       storeManagerOf: user.storeManagerOf ? String(user.storeManagerOf) : undefined,
       name: user.name,
+      pwUnset: pwUnset || undefined,
     });
     const res = NextResponse.json({
       ok: true,
       role: user.role,
       companyAdminOf: user.companyAdminOf ?? null,
       storeManagerOf: user.storeManagerOf ?? null,
+      passwordUnset: pwUnset,
     });
     res.cookies.set(SESSION_COOKIE, token, {
       httpOnly: true,

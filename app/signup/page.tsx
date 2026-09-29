@@ -27,7 +27,11 @@ function SignupForm() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "가입 실패");
+        setError(
+          data.error === "PHONE_ALREADY_USED"
+            ? "이미 등록된 번호입니다. 매장에서 포인트가 적립된 적이 있다면 로그인 화면에서 비밀번호를 비워두고 로그인하세요."
+            : (data.error ?? "가입 실패")
+        );
         return;
       }
       setStep("otp");

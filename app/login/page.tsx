@@ -34,7 +34,8 @@ function LoginForm() {
       } catch {
         // localStorage 접근 불가 시 그냥 /me로
       }
-      router.push(pendingClaim ? `/claim/${pendingClaim}` : "/me");
+      // 비밀번호를 비워둔 채 처음 들어온 손님은 비밀번호부터 정하게 한다(설정 뒤 적립 화면으로 이동).
+      router.push(data.passwordUnset ? "/me/password" : pendingClaim ? `/claim/${pendingClaim}` : "/me");
       router.refresh();
     } finally {
       setLoading(false);
@@ -57,7 +58,11 @@ function LoginForm() {
           </div>
           <div className="field">
             <label>비밀번호</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <p className="faint" style={{ marginTop: 6 }}>
+              매장에서 포인트가 적립되어 처음 로그인하시는 분은 <b>비밀번호를 비워두고</b> 로그인하세요. 로그인 후 비밀번호를
+              정하시면 됩니다.
+            </p>
           </div>
           {error && <div className="error">{error}</div>}
           <button type="submit" className="full" disabled={loading}>

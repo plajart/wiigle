@@ -16,12 +16,6 @@ export interface IStore {
     baseUrl: string; // 예: http://192.168.45.240:8787
     apiKey: string;
   };
-  // 벤더 POS(챔프 등)에서 결제가 확정될 때마다 자동 적립할 비율. 벤더 자체의 적립 규칙이
-  // 설정 안 돼 있는 매장이 많아(예: 챔프 MEM_SALES_POINT 미사용) 벤더 값을 그대로
-  // 동기화하는 대신 우리 서버가 결제금액 기준으로 직접 계산해 적립한다.
-  pointPolicy?: {
-    earnRate: number; // 0.03 = 결제금액의 3%
-  };
   createdAt: Date;
 }
 
@@ -37,9 +31,6 @@ const StoreSchema = new Schema<IStore>({
   vendorApi: {
     baseUrl: { type: String },
     apiKey: { type: String },
-  },
-  pointPolicy: {
-    earnRate: { type: Number, default: 0.03 },
   },
   createdAt: { type: Date, default: Date.now },
 });

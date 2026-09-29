@@ -12,6 +12,7 @@ export type SessionPayload = {
   role: UserRole;
   companyAdminOf?: string; // role="admin"일 때 — 관리하는 고객사
   storeManagerOf?: string; // role="manager"일 때 — 관리하는 매장
+  pwUnset?: boolean; // 비밀번호를 아직 정하지 않고 들어온 세션 — 정할 때까지 고객 화면에서 비밀번호 설정으로 안내한다
 };
 
 export async function hashPassword(pw: string) {

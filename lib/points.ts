@@ -240,28 +240,27 @@ export async function getAvailableForStore(customerId: string, storeId: string) 
 }
 
 /**
- * 카운터 적립 — 계산원이 POS 앱에서 고객을 매칭한 뒤 결제 금액을 입력하면, 그
- * 매장의 적립률(Store.pointPolicy.earnRate)만큼 즉시 적립한다. 벤더 POS(챔프 등)의
- * DB나 결제 이벤트를 신뢰하지 않고 이 앱이 적립의 유일한 출처가 된다(챔프 자체
- * 적립규칙이 꺼져있거나 비어있는 매장이 실제로 많아 그쪽에 의존할 수 없었음).
+ * 카운터 수동 적립 — 계산원이 POS 앱에서 고객을 매칭한 뒤 **적립할 포인트**를 직접 입력해 적립한다.
+ * 적립 비율은 이 프로그램이 정하지 않는다(포스기 프로그램에서 관리) — 정상 흐름에서는 포스기 프로그램이
+ * 계산한 적립액이 에이전트로 자동 반영되고(posAgentEarn), 이 수동 적립은 그 보조 수단이다.
  * write_earn 스코프가 동의된 매장에서만 허용.
  */
 export async function posEarn(
   storeId: string,
   customerId: string,
-  saleAmount: number,
+  earnAmountInput: number,
   actorStaffId: string,
   clientTxnId?: string
 ) {
-  if (saleAmount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
+  if (!Number.isFinite(earnAmountInput) || earnAmountInput <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
   if (!store.posIntegration.scopes.includes("write_earn")) {
     throw new ApiError(403, "WRITE_EARN_NOT_CONSENTED");
   }
 
-  const earnRate = store.pointPolicy?.earnRate ?? 0.03;
-  const earnAmount = Math.floor(saleAmount * earnRate);
+  const earnAmount = Math.floor(earnAmountInput);
+  if (earnAmount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
 
   // 멱등키가 있으면 "이벤트 기록 생성"을 적립보다 먼저 시도한다 — clientTxnId 유니크
   // 인덱스가 걸려있어 이 insert 자체가 원자적인 "선점"이 된다. 두 요청이 진짜 동시에
@@ -277,7 +276,7 @@ export async function posEarn(
       status: "CONFIRMED",
       approvedBy: actorStaffId,
       clientTxnId,
-      reason: `POS 결제 적립 (결제액 ${saleAmount} × ${earnRate})`,
+      reason: "POS 수동 적립 (계산원 입력)",
     });
   } catch (e) {
     if (clientTxnId && (e as { code?: number }).code === 11000) {
@@ -296,7 +295,7 @@ export async function posEarn(
     actorId: actorStaffId,
     action: "POS_EARN",
     scope: "write_earn",
-    meta: { customerId, saleAmount, earnRate, earnAmount, eventId: event._id },
+    meta: { customerId, earnAmount, eventId: event._id },
   });
 
   return { event, earnAmount };
@@ -378,10 +377,9 @@ export async function posCheckout(
 
 export type VendorSyncEvent = {
   vendorTxnId: string;
-  // EARN/USE: 벤더가 이미 계산해 넘겨준 적립/사용액을 그대로 반영.
-  // PAYMENT: 벤더 자체 적립 규칙이 없는 매장을 위해 "결제금액"만 넘기면 서버가
-  // Store.pointPolicy.earnRate로 직접 적립액을 계산한다(결제 확정을 적립 트리거로 사용).
-  type: "EARN" | "USE" | "PAYMENT";
+  // 벤더(포스기 프로그램)가 이미 계산해 넘겨준 적립/사용액을 그대로 반영한다. 적립 비율은
+  // 이 프로그램이 정하지 않는다.
+  type: "EARN" | "USE";
   amount: number;
 };
 
@@ -404,8 +402,6 @@ export async function applyVendorSync(
   terminalId: string
 ) {
   const applied: { vendorTxnId: string; type: string; amount: number; note?: string }[] = [];
-  const store = await Store.findById(storeId).lean();
-  const earnRate = store?.pointPolicy?.earnRate ?? 0.03;
 
   // 이 포스기에서 이 고객의 레거시 잔액을 가져온 적이 없는지 확인(포스기 단위 — 매장의
   // 다른 포스기에서 이미 실적립/사용이 있었어도 이 포스기 몫은 별도로 가져와야 함).
@@ -451,26 +447,7 @@ export async function applyVendorSync(
         reason: `벤더 POS 적립 동기화 (terminal ${terminalId})`,
       });
       applied.push({ vendorTxnId: ev.vendorTxnId, type: "VENDOR_EARN", amount: ev.amount });
-    } else if (ev.type === "PAYMENT") {
-      // 결제 확정 트리거 — 벤더가 자체 계산한 적립액이 아니라 결제원금(ev.amount)을 받아
-      // 우리 정책(earnRate)으로 직접 적립액을 계산한다. vendorTxnId는 "이 결제 1건"의
-      // 멱등키이므로, 같은 결제로 두 번 적립되는 일은 없다.
-      const earnAmount = Math.floor(ev.amount * earnRate);
-      if (earnAmount > 0) {
-        const account = await getOrCreateAccount(customerId, storeId, "STORE");
-        await atomicCredit(account._id, earnAmount);
-      }
-      await PointEvent.create({
-        userId: customerId,
-        storeId,
-        type: "VENDOR_EARN",
-        amount: earnAmount,
-        status: "CONFIRMED",
-        vendorTxnId: ev.vendorTxnId,
-        reason: `벤더 POS 결제 확정 트리거 적립 (결제액 ${ev.amount} × ${earnRate}, terminal ${terminalId})`,
-      });
-      applied.push({ vendorTxnId: ev.vendorTxnId, type: "VENDOR_EARN", amount: earnAmount });
-    } else {
+    } else if (ev.type === "USE") {
       const breakdown = await debitAvailable(customerId, storeId, ev.amount);
       let note: string | undefined;
       if (!breakdown) {
@@ -515,8 +492,9 @@ export async function lookupCustomerByPhone(phone: string) {
  * 전화번호로 고객을 찾고, 없으면 그 자리에서 새로 만든다(2026-09-27 결정: 카드는 신원
  * 증거로 쓰지 않고 전화번호만이 신원 근거이므로, 적립/사용 흐름 어디서든 전화번호가
  * 확인되면 곧바로 계정이 있어야 한다 — 계산원이 별도 "가입 승인" 단계를 거칠 필요 없음).
- * 새로 만든 계정은 임시 비밀번호(무작위, 로그인 불가)로 잠겨 있고, 본인이 나중에
- * OTP로 인증하면 로그인 앱(`/api/v1/auth/otp/verify`)에서 정식으로 비밀번호를 설정한다.
+ * 새로 만든 계정은 비밀번호를 비워 둔다(passwordHash=""). 손님이 나중에 로그인 화면에서
+ * 전화번호만 넣고(비밀번호는 비워둔 채) 들어와 고객 관리모드에서 비밀번호를 정하면 된다.
+ * 적립·사용은 계산원이 전화번호를 확인해 처리하므로 로그인 없이도 문제가 없다.
  */
 export async function getOrCreateUserByPhone(phone: string) {
   const trimmed = phone.replace(/[^0-9]/g, "");
@@ -524,14 +502,12 @@ export async function getOrCreateUserByPhone(phone: string) {
   const existing = await User.findOne({ phone: trimmed });
   if (existing) return existing;
 
-  const bcrypt = (await import("bcryptjs")).default;
-  const randomPw = await bcrypt.hash(`pos-issued:${trimmed}:${Date.now()}:${Math.random()}`, 10);
   const { issueDigitalCardNo } = await import("./card");
   const digitalCardNo = await issueDigitalCardNo();
   try {
     return await User.create({
       phone: trimmed,
-      passwordHash: randomPw,
+      passwordHash: "",
       name: "포인트 손님",
       digitalCardNo,
     });
