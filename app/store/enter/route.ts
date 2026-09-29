@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import mongoose from "mongoose";
-import { getSession } from "@/lib/session";
+import { getFreshSession } from "@/lib/session";
 import { dbConnect } from "@/lib/mongodb";
 import { STORE_CONTEXT_COOKIE } from "@/lib/store-context";
 import { COMPANY_CONTEXT_COOKIE } from "@/lib/company-context";
@@ -21,7 +21,7 @@ function redirectTo(path: string, cookie?: string, companyCookie?: string) {
 // 운영자(자기 고객사 매장) / 소유자(모든 매장)가 매장을 골라 "매장 관리자 권한"으로 관리모드에 들어간다.
 // 현재 매장을 쿠키에 저장하고 /store 로 보낸다. 링크는 <a>로 걸 것(Link 미리읽기가 쿠키를 바꾸지 않게).
 export async function GET(req: Request) {
-  const session = await getSession();
+  const session = await getFreshSession();
   if (!session) return redirectTo("/login");
   if (session.role === "manager") return redirectTo("/store");
   if (session.role !== "owner" && session.role !== "admin") return redirectTo("/me");

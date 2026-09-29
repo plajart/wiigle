@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
 import { dbConnect } from "@/lib/mongodb";
-import { requireCompanyAdmin } from "@/lib/rbac";
+import { requireCompanyAdmin, ApiError } from "@/lib/rbac";
+import { assignManager } from "@/lib/account-assign";
 import { resolveCompanyId } from "@/lib/company-context";
-import { hashPassword } from "@/lib/auth";
-import { issueDigitalCardNo } from "@/lib/card";
 import Store from "@/lib/models/Store";
 import Company from "@/lib/models/Company";
-import User from "@/lib/models/User";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
 
@@ -46,55 +43,54 @@ export async function GET(req: Request) {
   }
 }
 
-// 운영자(또는 소유자): 매장 생성. 매장 관리자(manager) 계정도 함께 생성(초대 발송 인프라가
-// 없어 임시 비밀번호를 응답으로 직접 반환하는 방식으로 단순화 — 운영 전 이메일/SMS 초대로
-// 교체 권장). 운영자는 자기 고객사에만 만들 수 있고, 소유자는 companyId를 지정해야 한다.
+// 운영자(또는 소유자): 매장 생성. 매장 관리자는 선택이다 — 계정 없이 매장 정보만 만들어 두고 나중에
+// `/api/v1/stores/[storeId]/managers`로 지정해도 된다. adminPhone을 함께 보내면 그 사람을 관리자로 지정한다
+// (가입 안 한 번호면 adminName으로 계정을 새로 만들고 임시 비밀번호를 응답으로 한 번만 돌려준다).
+// 운영자는 자기 고객사에만 만들 수 있고, 소유자는 본사 관리모드로 들어간 고객사(또는 companyId)에 만든다.
 export async function POST(req: Request) {
   try {
     await dbConnect();
     const session = await requireCompanyAdmin();
     const { name, franchiseCode, adminPhone, adminName, companyId } = await req.json();
-    if (!name || !adminPhone || !adminName) {
-      return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
-    }
+    if (!name) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
 
     let targetCompanyId: string;
     if (session.role === "admin") {
       targetCompanyId = session.companyAdminOf!;
     } else {
-      // 소유자: 본사 관리모드로 들어간 고객사에 만든다(명시한 companyId가 있으면 그것).
       const chosen = companyId ?? (await resolveCompanyId(session));
       if (!chosen) return NextResponse.json({ error: "COMPANY_ID_REQUIRED" }, { status: 400 });
       targetCompanyId = chosen;
     }
 
-    const dup = await User.findOne({ phone: adminPhone });
-    if (dup) return NextResponse.json({ error: "PHONE_ALREADY_USED" }, { status: 409 });
-
     const store = await Store.create({ name, companyId: targetCompanyId, franchiseCode, posIntegration: { scopes: [] } });
-
-    const tempPassword = crypto.randomBytes(9).toString("base64url"); // 추측 방지(2026-09-29)
-    const passwordHash = await hashPassword(tempPassword);
-    const digitalCardNo = await issueDigitalCardNo();
-    const manager = await User.create({
-      phone: adminPhone,
-      name: adminName,
-      passwordHash,
-      role: "manager",
-      storeManagerOf: store._id,
-      phoneVerified: true,
-      digitalCardNo,
-    });
-
     await AuditLog.create({
       storeId: store._id,
       actorType: "HQ_ADMIN",
       actorId: session.sub,
       action: "STORE_CREATE",
-      meta: { storeId: store._id, managerId: manager._id },
+      meta: { storeId: store._id },
     });
 
-    return NextResponse.json({ ok: true, store, storeManager: { phone: adminPhone, tempPassword } });
+    // 관리자 지정은 매장이 만들어진 뒤에 한다 — 실패해도 매장은 남고, 관리자는 나중에 다시 지정하면 된다.
+    let manager: Awaited<ReturnType<typeof assignManager>> | null = null;
+    let managerError: string | null = null;
+    if (adminPhone) {
+      try {
+        manager = await assignManager(String(store._id), adminPhone, adminName);
+        await AuditLog.create({
+          storeId: store._id,
+          actorType: "HQ_ADMIN",
+          actorId: session.sub,
+          action: "MANAGER_ASSIGN",
+          meta: { userId: manager.userId, created: manager.created },
+        });
+      } catch (e) {
+        managerError = e instanceof ApiError ? e.message : "ASSIGN_FAILED";
+      }
+    }
+
+    return NextResponse.json({ ok: true, store, storeManager: manager, managerError });
   } catch (e) {
     return handleApiError(e);
   }

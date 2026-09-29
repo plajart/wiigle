@@ -1,16 +1,17 @@
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/session";
+import { getFreshSession } from "@/lib/session";
 import Sidebar, { SidebarItem } from "../components/Sidebar";
 
 // 플랫폼 소유자(role=owner) 전용 영역 — 고객사·운영자 계정·고객앱 버전을 관리한다.
 export default async function OwnerLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession();
+  const session = await getFreshSession();
   if (!session) redirect("/login");
+  if (session.pwUnset) redirect("/me/password"); // 비밀번호를 정하기 전에는 관리 화면 불가
   if (session.role !== "owner") redirect("/me");
 
   const items: SidebarItem[] = [
     { href: "/owner", label: "고객사 관리", icon: "◈" },
-    { href: "/owner/admins", label: "운영자 배정", icon: "◐" },
+    { href: "/owner/admins", label: "본사 운영자 지정", icon: "◐" },
     { href: "/owner/applications", label: "매장 가입 신청", icon: "✓" },
     { href: "/owner/app-releases", label: "고객앱 버전 관리", icon: "⚙" },
   ];

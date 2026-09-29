@@ -126,6 +126,11 @@ export default function CompaniesClient() {
                   >
                     이름 변경
                   </button>
+                  <a href={`/owner/admins?companyId=${encodeURIComponent(c._id)}`}>
+                    <button type="button" className="sm ghost">
+                      운영자 지정
+                    </button>
+                  </a>
                   {/* <a>로 건다 — 이동하면서 서버가 현재 고객사를 기억시킨다(미리읽기 방지) */}
                   <a href={`/hq/enter?companyId=${encodeURIComponent(c._id)}`}>
                     <button type="button" className="sm">

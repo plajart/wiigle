@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { requireSession } from "@/lib/rbac";
+import { requireSessionAllowUnsetPassword } from "@/lib/rbac";
 import User from "@/lib/models/User";
 import { hashPassword, verifyPassword, signSession, SESSION_COOKIE } from "@/lib/auth";
 import { checkNewPassword } from "@/lib/password";
@@ -12,7 +12,7 @@ import { handleApiError, rateLimit } from "@/lib/api-utils";
 export async function POST(req: Request) {
   try {
     await dbConnect();
-    const session = await requireSession();
+    const session = await requireSessionAllowUnsetPassword();
     rateLimit(`pw-change:${session.sub}`, 10, 10 * 60 * 1000);
 
     const { currentPassword, newPassword } = await req.json();
@@ -30,9 +30,6 @@ export async function POST(req: Request) {
       if (!(await verifyPassword(String(currentPassword), user.passwordHash))) {
         return NextResponse.json({ error: "WRONG_CURRENT_PASSWORD" }, { status: 403 });
       }
-    } else if (user.role !== "user") {
-      // 비밀번호 없는 권한 계정은 존재해선 안 된다 — 여기서 정하게 두지 않고 막는다.
-      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
     }
 
     user.passwordHash = await hashPassword(newPassword);

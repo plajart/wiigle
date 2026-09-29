@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/session";
+import { getFreshSession } from "@/lib/session";
 import { dbConnect } from "@/lib/mongodb";
 import { resolveStoreId } from "@/lib/store-context";
 import Store from "@/lib/models/Store";
@@ -8,8 +8,9 @@ import Sidebar, { SidebarItem } from "../components/Sidebar";
 import ContextBar from "../components/ContextBar";
 
 export default async function StoreLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession();
+  const session = await getFreshSession();
   if (!session) redirect("/login");
+  if (session.pwUnset) redirect("/me/password"); // 비밀번호를 정하기 전에는 관리 화면 불가
   // manager는 자기 매장 고정, owner/admin은 운영자 화면에서 매장을 골라 들어온 것 — 셋 다
   // 아니면(권한 없는 일반회원 등) 접근 불가.
   if (session.role !== "manager" && session.role !== "owner" && session.role !== "admin") redirect("/me");
