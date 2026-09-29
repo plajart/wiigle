@@ -8,7 +8,7 @@ type Msg = { text: string; ok: boolean };
 
 const ERRORS: Record<string, string> = {
   USER_NOT_FOUND: "가입되지 않은 번호입니다. 이름을 입력하면 계정을 새로 만들어 지정합니다.",
-  CANNOT_CHANGE_THIS_ROLE: "소유자 또는 운영자 계정은 매장 관리자로 지정할 수 없습니다.",
+  CANNOT_CHANGE_THIS_ROLE: "본사(소유자) 또는 고객사 운영자 계정은 매장 관리자로 지정할 수 없습니다.",
   ALREADY_MANAGER: "이미 이 매장의 관리자입니다.",
   MANAGER_OF_OTHER_COMPANY: "다른 고객사 매장의 관리자입니다.",
   INVALID_PHONE: "휴대폰번호를 확인해주세요.",
@@ -171,7 +171,7 @@ export default function StoresClient({ isOwner }: { isOwner: boolean }) {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">{isOwner ? "소유자 · 본사 관리모드" : "본사 관리모드"}</div>
+        <div className="eyebrow">{isOwner ? "본사 · 고객사 관리모드" : "고객사 관리모드"}</div>
         <h1>매장 · 관리자</h1>
         <div className="desc">
           현재 고객사에 매장을 등록하고, 매장별로 관리자를 지정합니다. 관리자는 나중에 지정해도 됩니다(계정 없이 매장 정보만

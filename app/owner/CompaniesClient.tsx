@@ -69,11 +69,11 @@ export default function CompaniesClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">소유자</div>
+        <div className="eyebrow">본사 관리모드</div>
         <h1>고객사 관리</h1>
         <div className="desc">
-          고객사(본사)를 만들고 이름을 바꿉니다. 고객사를 눌러 <b>본사 관리모드</b>에 들어가면 그 고객사의 운영자와 같은 권한으로 매장 목록을
-          보고 관리할 수 있습니다. 소유자는 운영자·매장 관리자의 권한을 모두 가집니다.
+          고객사를 만들고 이름을 바꿉니다. 고객사를 눌러 <b>고객사 관리모드</b>에 들어가면 그 고객사의 운영자와 같은 권한으로 매장 목록을
+          보고 관리할 수 있습니다. 본사는 고객사 운영자·매장 관리자의 권한을 모두 가집니다.
         </div>
       </div>
 
@@ -134,7 +134,7 @@ export default function CompaniesClient() {
                   {/* <a>로 건다 — 이동하면서 서버가 현재 고객사를 기억시킨다(미리읽기 방지) */}
                   <a href={`/hq/enter?companyId=${encodeURIComponent(c._id)}`}>
                     <button type="button" className="sm">
-                      본사 관리모드 열기
+                      고객사 관리모드 열기
                     </button>
                   </a>
                 </span>

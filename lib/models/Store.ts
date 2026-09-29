@@ -5,7 +5,7 @@ export type PosScope = "read_balance" | "read_history" | "write_redeem" | "write
 export interface IStore {
   _id: Types.ObjectId;
   name: string;
-  companyId: Types.ObjectId; // 소속 고객사(본사) — 2026-09-30 도입, 모든 매장은 반드시 하나의 고객사에 속함
+  companyId: Types.ObjectId; // 소속 고객사 — 2026-09-30 도입, 모든 매장은 반드시 하나의 고객사에 속함
   franchiseCode?: string;
   posIntegration: {
     scopes: PosScope[];

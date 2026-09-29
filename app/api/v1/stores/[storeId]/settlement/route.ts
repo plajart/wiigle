@@ -45,8 +45,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ storeId:
       if (isEarn) totalEarned += e.amount;
       if (isUse) totalUsed += e.amount;
 
-      const tid = e.terminalId ? String(e.terminalId) : "WEB"; // terminalId 없는 이벤트(웹/본사 조작 등)는 "WEB"으로 묶음
-      const bucket = byTerminal.get(tid) ?? { terminalId: tid, name: terminalName.get(tid) || "웹/본사", earned: 0, used: 0, count: 0 };
+      const tid = e.terminalId ? String(e.terminalId) : "WEB"; // terminalId 없는 이벤트(웹/관리모드 조작 등)는 "WEB"으로 묶음
+      const bucket = byTerminal.get(tid) ?? { terminalId: tid, name: terminalName.get(tid) || "웹/관리모드", earned: 0, used: 0, count: 0 };
       if (isEarn) bucket.earned += e.amount;
       if (isUse) bucket.used += e.amount;
       bucket.count += 1;
@@ -58,7 +58,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ storeId:
         amount: e.amount,
         occurredAt: e.occurredAt,
         terminalId: e.terminalId ? String(e.terminalId) : null,
-        terminalName: terminalName.get(tid) || (e.terminalId ? "해지된 단말" : "웹/본사"),
+        terminalName: terminalName.get(tid) || (e.terminalId ? "해지된 단말" : "웹/관리모드"),
         cardNo: e.cardNo || null,
         reason: e.reason || null,
       };

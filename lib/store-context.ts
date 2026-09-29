@@ -5,7 +5,7 @@ import type { SessionPayload } from "./auth";
 import { dbConnect } from "./mongodb";
 import Store from "./models/Store";
 
-// 소유자/운영자가 "매장 관리모드"로 들어가 있는 동안 현재 매장을 기억하는 쿠키.
+// 본사·고객사 운영자가 "매장 관리모드"로 들어가 있는 동안 현재 매장을 기억하는 쿠키.
 // /store/enter?storeId= 를 거치면 설정된다. 값은 신뢰하지 않고 매 요청마다 권한을 다시 확인한다.
 export const STORE_CONTEXT_COOKIE = "pm_store";
 

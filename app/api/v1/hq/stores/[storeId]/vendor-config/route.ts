@@ -5,7 +5,7 @@ import Store from "@/lib/models/Store";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
 
-// 본사 관리자: 매장의 실제 벤더 POS Agent API 연결정보 등록 (호스트/포트, API 키)
+// 고객사 운영자(자기 고객사 매장) / 본사: 매장의 실제 벤더 POS Agent API 연결정보 등록 (호스트/포트, API 키)
 export async function PUT(req: Request, { params }: { params: Promise<{ storeId: string }> }) {
   try {
     await dbConnect();

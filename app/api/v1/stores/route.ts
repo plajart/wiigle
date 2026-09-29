@@ -16,7 +16,7 @@ export async function GET(req: Request) {
     const session = await requireCompanyAdmin();
     const queryCompanyId = new URL(req.url).searchParams.get("companyId");
 
-    // 운영자는 자기 고객사, 소유자는 ?companyId= → 본사 관리모드로 들어간 고객사 → (없으면) 전체 순.
+    // 고객사 운영자는 자기 고객사, 본사(소유자)는 ?companyId= → 고객사 관리모드로 들어간 고객사 → (없으면) 전체 순.
     let filter: Record<string, unknown> = {};
     if (session.role === "admin") {
       filter = { companyId: session.companyAdminOf };
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
 // 운영자(또는 소유자): 매장 생성. 매장 관리자는 선택이다 — 계정 없이 매장 정보만 만들어 두고 나중에
 // `/api/v1/stores/[storeId]/managers`로 지정해도 된다. adminPhone을 함께 보내면 그 사람을 관리자로 지정한다
 // (가입 안 한 번호면 adminName으로 계정을 새로 만들고 임시 비밀번호를 응답으로 한 번만 돌려준다).
-// 운영자는 자기 고객사에만 만들 수 있고, 소유자는 본사 관리모드로 들어간 고객사(또는 companyId)에 만든다.
+// 고객사 운영자는 자기 고객사에만 만들 수 있고, 본사(소유자)는 고객사 관리모드로 들어간 고객사(또는 companyId)에 만든다.
 export async function POST(req: Request) {
   try {
     await dbConnect();

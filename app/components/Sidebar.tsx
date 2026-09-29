@@ -12,7 +12,7 @@ export default function Sidebar({
   homeHref,
 }: {
   items: SidebarItem[];
-  modeLinks?: SidebarItem[]; // 역할에 따라 제공되는 다른 모드로의 진입 메뉴(예: 회원↔본사↔매장)
+  modeLinks?: SidebarItem[]; // 역할에 따라 제공되는 다른 모드로의 진입 메뉴(본사 · 고객사 · 매장 · 고객)
   roleLabel: string;
   homeHref: string;
 }) {

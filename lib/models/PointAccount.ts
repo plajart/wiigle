@@ -5,7 +5,7 @@ export type PointAccountType = "STORE" | "HQ";
 export interface IPointAccount {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
-  storeId: Types.ObjectId | null; // null = 통합포인트(고객사 본사 지급분)
+  storeId: Types.ObjectId | null; // null = 통합포인트(고객사가 지급한 분)
   // 이 계좌가 속한 고객사 — 통합포인트는 고객사별로 따로 쌓이고, 잔액 합산·차감은 같은 고객사 안에서만 한다.
   // 매장 계좌는 그 매장의 고객사와 같다.
   companyId: Types.ObjectId;

@@ -68,7 +68,7 @@ export default function MeDashboardClient() {
         </div>
       )}
 
-      {/* 통합포인트는 고객사(본사)별로 따로 쌓이고 그 고객사의 매장들 안에서만 쓸 수 있으므로, 고객사별로 나눠서 보여준다. */}
+      {/* 통합포인트는 고객사별로 따로 쌓이고 그 고객사의 매장들 안에서만 쓸 수 있으므로, 고객사별로 나눠서 보여준다. */}
       {summary?.companies.map((c) => (
         <div key={c.companyId}>
           <div className="point-hero">

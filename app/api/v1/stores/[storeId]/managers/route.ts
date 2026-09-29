@@ -6,7 +6,7 @@ import AuditLog from "@/lib/models/AuditLog";
 import { assignManager, unassignManager } from "@/lib/account-assign";
 import { handleApiError } from "@/lib/api-utils";
 
-// 본사 운영자(자기 고객사 매장) / 소유자: 매장 관리자 목록 · 지정 · 해제.
+// 고객사 운영자(자기 고객사 매장) / 본사(소유자): 매장 관리자 목록 · 지정 · 해제.
 
 export async function GET(_req: Request, { params }: { params: Promise<{ storeId: string }> }) {
   try {

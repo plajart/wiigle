@@ -54,7 +54,7 @@ export default function CustomersClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">본사 관리모드</div>
+        <div className="eyebrow">고객사 관리모드</div>
         <h1>고객 조회</h1>
         <div className="desc">전화번호로 고객을 찾아 <b>이 고객사에서의</b> 포인트 현황과 이용내역을 확인합니다. 이 고객사에서 이용한 적이 없는 고객은 조회되지 않습니다.</div>
       </div>

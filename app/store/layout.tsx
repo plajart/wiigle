@@ -37,7 +37,7 @@ export default async function StoreLayout({ children }: { children: React.ReactN
 
   const modeLinks = buildModeLinks(session, "store");
 
-  const viewer = session.role === "owner" ? "소유자" : session.role === "admin" ? "운영자" : null;
+  const viewer = session.role === "owner" ? "본사" : session.role === "admin" ? "고객사 운영자" : null;
 
   return (
     <div className="shell">

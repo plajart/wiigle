@@ -7,7 +7,7 @@ type Admin = { _id: string; name: string; phone: string; companyId: string | nul
 
 const ERRORS: Record<string, string> = {
   USER_NOT_FOUND: "가입되지 않은 번호입니다. 이름을 입력하면 계정을 새로 만들어 지정합니다.",
-  CANNOT_CHANGE_THIS_ROLE: "소유자 또는 매장 관리자 계정은 운영자로 바꿀 수 없습니다.",
+  CANNOT_CHANGE_THIS_ROLE: "본사(소유자) 또는 매장 관리자 계정은 고객사 운영자로 바꿀 수 없습니다.",
   INVALID_PHONE: "휴대폰번호를 확인해주세요.",
   COMPANY_NOT_FOUND: "고객사를 찾을 수 없습니다.",
 };
@@ -68,17 +68,17 @@ export default function AdminsClient({ initialCompanyId }: { initialCompanyId: s
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">소유자</div>
-        <h1>본사 운영자 지정</h1>
+        <div className="eyebrow">본사 관리모드</div>
+        <h1>고객사 운영자 지정</h1>
         <div className="desc">
-          고객사(본사)의 운영자를 지정합니다. 운영자는 자기 고객사에서 매장을 만들고 매장 관리자를 지정할 수 있습니다. 이미 가입한
-          회원은 전화번호만, 가입하지 않은 번호는 이름을 함께 입력하면 계정을 새로 만들어 지정합니다. 소유자·매장 관리자
+          고객사의 운영자를 지정합니다. 운영자는 자기 고객사에서 매장을 등록하고 매장 관리자를 지정할 수 있습니다. 이미 가입한
+          고객은 전화번호만, 가입하지 않은 번호는 이름을 함께 입력하면 계정을 새로 만들어 지정합니다. 본사·매장 관리자
           계정은 여기서 바꿀 수 없습니다.
         </div>
       </div>
 
       <div className="card">
-        <div className="card-title">운영자 지정</div>
+        <div className="card-title">고객사 운영자 지정</div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -116,7 +116,7 @@ export default function AdminsClient({ initialCompanyId }: { initialCompanyId: s
         )}
       </div>
 
-      <h2>현재 운영자</h2>
+      <h2>현재 고객사 운영자</h2>
       <div className="card">
         {admins === null && <p className="muted">불러오는 중...</p>}
         {admins?.length === 0 && <p className="faint" style={{ margin: 0 }}>지정된 운영자가 없습니다.</p>}
@@ -132,7 +132,7 @@ export default function AdminsClient({ initialCompanyId }: { initialCompanyId: s
               type="button"
               className="sm ghost"
               disabled={busy}
-              onClick={() => window.confirm(`${a.name}님의 운영자 등급을 해제할까요?`) && assign(a.phone, null)}
+              onClick={() => window.confirm(`${a.name}님의 고객사 운영자 권한을 해제할까요?`) && assign(a.phone, null)}
             >
               해제
             </button>

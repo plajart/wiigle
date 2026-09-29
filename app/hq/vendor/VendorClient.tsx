@@ -42,7 +42,7 @@ export default function VendorClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
+        <div className="eyebrow">고객사 관리모드</div>
         <h1>벤더 API 설정</h1>
         <div className="desc">매장 POS 단말의 연동 에이전트 접속 정보를 등록합니다.</div>
       </div>

@@ -5,7 +5,7 @@ import { resolveCompanyId } from "@/lib/company-context";
 import { lookupCustomerByPhone, getCompanyPointSummary, hasCompanyRelation } from "@/lib/points";
 import { handleApiError } from "@/lib/api-utils";
 
-// 본사 운영자(소유자는 들어간 고객사)가 전화번호로 고객을 찾아 상세(개별 이용내역) 화면으로 진입하기 위한 조회.
+// 고객사 운영자(본사는 들어간 고객사 기준)가 전화번호로 고객을 찾아 상세(개별 이용내역) 화면으로 진입하기 위한 조회.
 // 통합포인트는 고객사 단위이므로 **이 고객사에서 이용한 적이 있는 고객만** 조회된다(다른 고객사에서만 이용한 고객은
 // 존재 여부도 알려주지 않는다). 잔액도 이 고객사 안의 것만 보여준다.
 export async function GET(req: Request) {

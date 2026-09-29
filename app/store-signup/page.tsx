@@ -75,12 +75,12 @@ export default function StoreSignupPage() {
           <div className="field">
             <label>신청 종류</label>
             <select value={type} onChange={(e) => setType(e.target.value as "NEW_COMPANY" | "ADD_STORE")}>
-              <option value="NEW_COMPANY">새 고객사(본사)와 첫 매장 등록</option>
+              <option value="NEW_COMPANY">새 고객사와 첫 매장 등록</option>
               <option value="ADD_STORE">이미 등록된 고객사에 매장 추가</option>
             </select>
           </div>
           <div className="field">
-            <label>{type === "ADD_STORE" ? "소속 고객사(본사) 이름" : "회사명(고객사)"}</label>
+            <label>{type === "ADD_STORE" ? "소속 고객사 이름" : "고객사(회사) 이름"}</label>
             <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="예: 더파티" required />
           </div>
           <div className="field">

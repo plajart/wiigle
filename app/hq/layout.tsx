@@ -7,13 +7,13 @@ import Sidebar, { SidebarItem } from "../components/Sidebar";
 import { buildModeLinks } from "../components/modeLinks";
 import ContextBar from "../components/ContextBar";
 
-// 본사(고객사) 관리모드 — 운영자는 자기 고객사, 소유자는 소유자 대시보드에서 골라 들어온 고객사.
+// 고객사 관리모드 — 고객사 운영자(admin)는 자기 고객사, 본사(owner)는 본사 대시보드에서 골라 들어온 고객사.
 export default async function HqLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
   if (!session) redirect("/login");
   if (session.role !== "owner" && session.role !== "admin") redirect("/me");
 
-  // 소유자가 고객사를 고르지 않고 들어오면 소유자 대시보드(고객사 목록)로 보낸다.
+  // 본사가 고객사를 고르지 않고 들어오면 본사 대시보드(고객사 목록)로 보낸다.
   const companyId = await resolveCompanyId(session);
   if (!companyId && session.role === "owner") redirect("/owner");
 
@@ -35,17 +35,17 @@ export default async function HqLayout({ children }: { children: React.ReactNode
   const bar = company ? (
     <ContextBar
       companyName={company.name}
-      note={session.role === "owner" ? "소유자가 운영자 권한으로 관리 중" : "운영자 관리모드"}
+      note={session.role === "owner" ? "본사가 고객사 운영자 권한으로 관리 중" : "고객사 관리모드"}
       backHref={session.role === "owner" ? "/owner" : undefined}
       backLabel="← 고객사 목록으로"
     />
   ) : (
-    <ContextBar companyName="지정되지 않음" note="소유자에게 고객사 배정을 요청하세요" warn />
+    <ContextBar companyName="지정되지 않음" note="본사에 고객사 운영자 배정을 요청하세요" warn />
   );
 
   return (
     <div className="shell">
-      <Sidebar items={items} modeLinks={modeLinks} roleLabel="본사" homeHref="/hq" />
+      <Sidebar items={items} modeLinks={modeLinks} roleLabel="고객사" homeHref="/hq" />
       <div className="shell-content">
         {bar}
         {children}

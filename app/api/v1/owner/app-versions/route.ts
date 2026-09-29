@@ -8,7 +8,7 @@ import { handleApiError } from "@/lib/api-utils";
 
 const RELEASES_DIR = path.join(process.cwd(), "uploads", "app-releases");
 
-// 본사 관리자: 안드로이드 앱(TWA 셀) 새 버전 업로드. 앱 내용(웹페이지)은 항상 실시간으로
+// 본사(소유자): 안드로이드 앱(TWA 셀) 새 버전 업로드. 앱 내용(웹페이지)은 항상 실시간으로
 // 최신인 것과 별개로, 이 업로드는 껍데기(아이콘·패키지 등) 자체가 바뀌었을 때만 필요하다.
 export async function POST(req: Request) {
   try {
@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   }
 }
 
-// 본사 관리자: 업로드된 버전 목록(최신순).
+// 본사(소유자): 업로드된 버전 목록(최신순).
 export async function GET() {
   try {
     await dbConnect();

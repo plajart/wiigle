@@ -97,7 +97,7 @@ export default function ApplicationsClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">소유자</div>
+        <div className="eyebrow">본사 관리모드</div>
         <h1>고객사·매장 등록 신청</h1>
         <div className="desc">
           셀프서비스로 들어온 등록 신청입니다. 승인할 때 <b>새 고객사로 만들지, 기존 고객사에 매장으로 추가할지</b> 고르면 매장과

@@ -8,7 +8,7 @@ import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
 
 const clip = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
-// 고객사(본사)·매장 등록 신청 (비로그인, 셀프서비스). 소유자가 승인하기 전까지는 로그인 가능한 계정이 생기지 않는다.
+// 고객사·매장 등록 신청 (비로그인, 셀프서비스). 본사(소유자)가 승인하기 전까지는 로그인 가능한 계정이 생기지 않는다.
 // 공개 API라 스팸·대량 신청을 막기 위해 IP당 요청 횟수를 제한한다.
 export async function POST(req: Request) {
   try {

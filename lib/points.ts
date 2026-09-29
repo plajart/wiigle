@@ -79,7 +79,7 @@ async function atomicCredit(accountId: Types.ObjectId, amount: number) {
 export type CompanyPointSummary = {
   companyId: string;
   companyName: string;
-  hq: number; // 통합포인트(고객사 본사 지급분)
+  hq: number; // 통합포인트(고객사가 지급한 분)
   stores: { storeId: string; storeName: string; balance: number }[];
   total: number; // 이 고객사 안에서 쓸 수 있는 통합 잔액
 };
@@ -113,7 +113,7 @@ export async function getMyPointSummary(userId: string): Promise<{ companies: Co
   return { companies: [...byCompany.values()].sort((x, y) => x.companyName.localeCompare(y.companyName, "ko")) };
 }
 
-/** 한 고객사 안에서의 잔액(통합포인트 + 그 고객사 매장들) — 매장·운영자 화면용. 계좌가 없으면 0. */
+/** 한 고객사 안에서의 잔액(통합포인트 + 그 고객사 매장들) — 매장·고객사 화면용. 계좌가 없으면 0. */
 export async function getCompanyPointSummary(userId: string, companyId: string): Promise<CompanyPointSummary> {
   const all = await getMyPointSummary(userId);
   const found = all.companies.find((c) => c.companyId === String(companyId));
@@ -122,7 +122,7 @@ export async function getCompanyPointSummary(userId: string, companyId: string):
   return { companyId: String(companyId), companyName: company?.name ?? "", hq: 0, stores: [], total: 0 };
 }
 
-/** 이 고객이 이 고객사에서 이용한 적이 있는가(계좌 또는 내역) — 운영자 고객 조회 범위 판단용. */
+/** 이 고객이 이 고객사에서 이용한 적이 있는가(계좌 또는 내역) — 고객사 운영자의 고객 조회 범위 판단용. */
 export async function hasCompanyRelation(userId: string, companyId: string): Promise<boolean> {
   if (await PointAccount.exists({ userId, companyId })) return true;
   return !!(await PointEvent.exists({ userId, companyId }));
@@ -141,7 +141,7 @@ export async function getMyPointHistory(userId: string, companyId?: string) {
 
 /**
  * 고객: 결제 예정 매장으로 포인트 이체. 매장이 POS 연동 동의에서
- * "본사/타매장 포인트 사용 허용"(accept_transfer) 스코프를 켜둔 경우에만
+ * "통합포인트·타매장 포인트 사용 허용"(accept_transfer) 스코프를 켜둔 경우에만
  * 허용되며, 별도 승인 절차 없이 즉시 반영된다(매장 단위 사전 동의로 승인을 대체).
  */
 export async function transferPoints(
@@ -246,7 +246,7 @@ export async function adjustHqPoints(customerId: string, companyId: string, delt
 }
 
 /**
- * 매장 포인트만으로 부족하면 본사포인트 → 타매장포인트 순서로 자동 차감한다.
+ * 매장 포인트만으로 부족하면 통합포인트 → 같은 고객사의 타매장 포인트 순서로 자동 차감한다.
  * posCheckout(우리 앱 화면에서 계산원이 직접 입력)과 applyVendorEvents(벤더 POS
  * 결제화면에서 이미 일어난 사용을 사후 동기화로 반영)가 이 로직을 공유한다 —
  * "누가 어떤 화면에서 차감을 트리거했든 잔액 차감 우선순위는 동일해야 한다".
@@ -377,7 +377,7 @@ export async function posEarn(
 }
 
 /**
- * 카운터 결제(POS 체크아웃) — 매장 포인트만으로 부족하면 본사포인트 → 타매장포인트
+ * 카운터 결제(POS 체크아웃) — 매장 포인트만으로 부족하면 통합포인트 → 같은 고객사 타매장 포인트
  * 순서로 부족분을 자동 차감한다. 매장 직원이 그 자리에서 처리하는 즉시결제이므로
  * 별도 승인 절차 없이 즉시 확정(CONFIRMED)한다 (설계문서 13-2 결정사항).
  * write_redeem 스코프가 동의된 매장에서만 허용.
@@ -469,7 +469,7 @@ export type VendorSyncEvent = {
  * USE가 우리 쪽 잔액보다 큰 경우도 거부하지 않고 그대로 반영한다(음수 허용) —
  * 이미 벤더 POS에서 손님에게 실제로 할인이 나간 확정된 사실이라 우리가 뒤늦게
  * "잔액 부족"이라며 되돌릴 방법이 없기 때문. 다만 감사로그에 결손(shortfall)을
- * 남겨서 운영자가 사후에 인지할 수 있게 한다.
+ * 남겨서 고객사 운영자가 사후에 인지할 수 있게 한다.
  */
 export async function applyVendorSync(
   storeId: string,
@@ -532,7 +532,7 @@ export async function applyVendorSync(
       let note: string | undefined;
       if (!breakdown) {
         // 잔액 부족 — 벤더 POS에서 이미 확정된 결제라 되돌릴 수 없음. 있는 만큼만 매장계좌에서
-        // 강제 차감해 마이너스로 만들고 결손을 감사로그에 남긴다(운영자 수동정산 대상).
+        // 강제 차감해 마이너스로 만들고 결손을 감사로그에 남긴다(고객사 운영자 수동정산 대상).
         const storeAccount = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
         await PointAccount.findByIdAndUpdate(storeAccount._id, { $inc: { balance: -ev.amount } });
         note = "SHORTFALL_FORCED_NEGATIVE";
@@ -564,7 +564,7 @@ export async function applyVendorSync(
   return { applied, availableBalance };
 }
 
-// 회원이면 누구나(본사/매장 관리자 포함) 고객으로서 조회될 수 있다 — role 구분 없음.
+// 회원이면 누구나(본사·고객사 운영자·매장 관리자 포함) 고객으로서 조회될 수 있다 — role 구분 없음.
 export async function lookupCustomerByPhone(phone: string) {
   return User.findOne({ phone }).lean();
 }

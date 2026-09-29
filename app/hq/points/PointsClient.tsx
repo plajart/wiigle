@@ -60,7 +60,7 @@ export default function PointsClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">본사 관리모드</div>
+        <div className="eyebrow">고객사 관리모드</div>
         <h1>통합포인트 관리</h1>
         <div className="desc">통합포인트는 현재 고객사 단위로 지급·조정되며, 그 고객사의 모든 매장에서 사용할 수 있습니다.</div>
       </div>

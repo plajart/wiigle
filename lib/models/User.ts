@@ -6,17 +6,18 @@ export interface IPosLink {
   linkedAt: Date;
 }
 
-// 계정 등급 4단계(2026-09-30 도입) — 낮은 등급일수록 좁은 범위:
-//   owner   소유자  — 플랫폼 전체(슈퍼유저), 모든 고객사·매장을 넘나들며 관리
-//   admin   운영자  — 한 고객사(본사) 범위 — companyAdminOf로 그 회사만
-//   manager 관리자  — 한 매장 범위 — storeManagerOf로 그 매장만
-//   user    고객    — 등급 없음(기본값), 포인트를 적립/사용하는 일반 회원
+// 용어 체계와 계정 등급(role 값은 그대로) — 낮은 등급일수록 좁은 범위:
+//   owner   본사(소유자)      — 플랫폼 전체(슈퍼유저), 모든 고객사·매장을 넘나들며 관리
+//   admin   고객사(운영자)    — 한 고객사 범위 — companyAdminOf로 그 고객사만
+//   manager 매장(관리자)      — 한 매장 범위 — storeManagerOf로 그 매장만
+//   user    고객              — 등급 없음(기본값), 포인트를 적립/사용하는 일반 회원
+// 관리모드 이름도 같다: 본사 관리모드 · 고객사 관리모드 · 매장 관리모드 · 고객 모드.
 export type UserRole = "owner" | "admin" | "manager" | "user";
 
 /**
  * 모든 계정은 기본적으로 하나의 "회원"이다 — 전화번호+비밀번호로 가입하고,
  * 누구나 고객으로서 포인트를 적립/사용할 수 있다. owner/admin/manager 권한은
- * 별도의 계정 종류가 아니라 이 회원 계정에 "얹는" 등급이다(운영자가 동시에
+ * 별도의 계정 종류가 아니라 이 회원 계정에 "얹는" 등급이다(고객사 운영자가 동시에
  * 어느 매장에서 포인트를 쓰는 손님일 수도 있는 것처럼).
  */
 export interface IUser {
@@ -30,7 +31,7 @@ export interface IUser {
   firstLogin?: boolean;
   name: string;
   role: UserRole;
-  companyAdminOf?: Types.ObjectId; // role="admin"일 때 — 관리하는 고객사(본사)
+  companyAdminOf?: Types.ObjectId; // role="admin"일 때 — 운영하는 고객사
   storeManagerOf?: Types.ObjectId; // role="manager"일 때 — 관리하는 매장 (현재는 1인당 1개 매장)
   phoneVerified: boolean;
   otpCode?: string;

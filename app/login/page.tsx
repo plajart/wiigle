@@ -115,7 +115,7 @@ function LoginForm() {
           <br />
           고객 계정이 없다면 <a href="/signup">가입하기</a>
           <br />
-          매장을 운영하신다면 <a href="/store-signup">매장 등록 신청</a>
+          고객사·매장을 운영하신다면 <a href="/store-signup">고객사·매장 등록 신청</a>
         </p>
       </div>
     </div>

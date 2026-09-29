@@ -26,7 +26,7 @@ export async function GET() {
   }
 }
 
-// 소유자: 회원(전화번호)을 특정 고객사의 본사 운영자로 지정하거나(companyId 지정), 운영자 등급을
+// 본사(소유자): 회원(전화번호)을 특정 고객사의 운영자로 지정하거나(companyId 지정), 운영자 권한을
 // 해제(companyId=null → 일반 회원으로 되돌림). 가입하지 않은 번호면 name을 함께 보내 계정을 새로 만든다
 // (임시 비밀번호는 응답으로 한 번만). 소유자·매장 관리자 계정은 여기서 바꾸지 않는다.
 export async function POST(req: Request) {

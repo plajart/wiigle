@@ -69,7 +69,7 @@ const PointEventSchema = new Schema<IPointEvent>({
   occurredAt: { type: Date, default: Date.now },
 });
 
-// 고객 화면(고객사별 이용내역)·운영자 고객 조회가 훑는 쿼리
+// 고객 화면(고객사별 이용내역)·고객사 운영자 고객 조회가 훑는 쿼리
 PointEventSchema.index({ userId: 1, companyId: 1, occurredAt: -1 });
 
 // 매장의 일일 정산(날짜별 집계, 단말별 상세)이 훑는 쿼리 — 항상 storeId+occurredAt 범위로 조회한다.

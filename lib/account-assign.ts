@@ -9,10 +9,10 @@ import { normalizePhone } from "./password";
 import { ApiError } from "./rbac";
 
 /**
- * 운영자(고객사 본사)·매장 관리자 "지정" 로직 — 소유자가 운영자를, 운영자가 매장 관리자를 지정할 때 공통으로 쓴다.
+ * 고객사 운영자·매장 관리자 "지정" 로직 — 본사(소유자)가 고객사 운영자를, 고객사 운영자가 매장 관리자를 지정할 때 공통으로 쓴다.
  *
  * 규칙
- *  - 한 계정은 하나의 등급만 갖는다(user/manager/admin/owner). 소유자·(다른 등급) 계정은 여기서 바꾸지 않는다.
+ *  - 한 계정은 하나의 등급만 갖는다(user/manager/admin/owner). 본사(소유자)·(다른 등급) 계정은 여기서 바꾸지 않는다.
  *  - 이미 가입한 회원이면 그 계정을 승격한다(본인 비밀번호 그대로). 가입 안 한 번호면 이름을 받아 계정을 새로 만든다 —
  *    문자 인증이 없어 본인이 먼저 가입할 수 없기 때문. 새로 만들 때는 **임의 임시 비밀번호를 부여해 지정한 사람에게
  *    한 번만 알려준다**(권한 계정의 비밀번호는 로그인 화면에서 공개하지 않는다). 지정한 사람이 본인에게 안전하게
@@ -92,7 +92,7 @@ export async function unassignManager(storeId: string, userId: string) {
   return user;
 }
 
-/** 본사 운영자(admin) 지정 — 소유자만 호출한다. 다른 고객사의 운영자를 이 고객사로 옮길 수도 있다. */
+/** 고객사 운영자(admin) 지정 — 본사(소유자)만 호출한다. 다른 고객사의 운영자를 이 고객사로 옮길 수도 있다. */
 export async function assignCompanyAdmin(companyId: string, rawPhone: unknown, name?: unknown): Promise<AssignResult> {
   const company = await Company.findById(companyId).select("_id").lean();
   if (!company) throw new ApiError(404, "COMPANY_NOT_FOUND");
@@ -102,7 +102,7 @@ export async function assignCompanyAdmin(companyId: string, rawPhone: unknown, n
     const { user: created, tempPassword } = await createAccount(phone, name, { role: "admin", companyAdminOf: company._id });
     return { userId: String(created._id), name: created.name, phone, created: true, tempPassword };
   }
-  // 소유자와 매장 관리자는 여기서 바꾸지 않는다(한 계정은 한 등급 — 매장 관리자를 운영자로 바꾸면 매장 권한이 사라진다).
+  // 본사(소유자)와 매장 관리자는 여기서 바꾸지 않는다(한 계정은 한 등급 — 매장 관리자를 운영자로 바꾸면 매장 권한이 사라진다).
   if (user.role === "owner" || user.role === "manager") throw new ApiError(409, "CANNOT_CHANGE_THIS_ROLE");
   let tempPassword: string | undefined;
   if (!user.passwordHash) {

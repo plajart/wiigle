@@ -51,7 +51,7 @@ export default function AppReleasesClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">플랫폼 관리자</div>
+        <div className="eyebrow">본사 관리모드</div>
         <h1>고객앱 버전 관리</h1>
         <div className="desc">
           앱이 보여주는 내용(화면·기능)은 이 웹사이트 자체라 항상 실시간으로 최신입니다. 여기서 올리는 건
@@ -60,7 +60,7 @@ export default function AppReleasesClient() {
           이미 설치된 앱은 열 때마다 새 버전이 있다는 안내를 받습니다(설치는 사용자가 직접 진행).
         </div>
         <div className="desc">
-          <a href="/api/v1/pos-agent/download">포스 프로그램 다운로드</a> (본사·매장 관리자 전용)
+          <a href="/api/v1/pos-agent/download">포스 프로그램 다운로드</a> (본사·고객사 운영자·매장 관리자 전용)
         </div>
       </div>
 

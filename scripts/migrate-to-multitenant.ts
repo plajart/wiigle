@@ -79,7 +79,7 @@ async function main() {
   const orphan = await stores.countDocuments({ companyId: { $exists: false } });
   if (orphan > 0) console.log(`주의: 위 처리 후에도 고객사가 없는 매장 ${orphan}개 (companyId는 필수 필드) — 수동 지정 필요`);
 
-  // 3. 옛 본사 관리자 → owner
+  // 3. 옛 플랫폼 관리자(isHqAdmin) → owner(본사)
   const hqFilter = { isHqAdmin: true, role: { $ne: "owner" } };
   const hqCount = await users.countDocuments(hqFilter);
   console.log(`isHqAdmin 유저 → owner: ${hqCount}명`);

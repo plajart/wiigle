@@ -16,7 +16,7 @@ export default function HqDashboardClient({ isOwner }: { isOwner: boolean }) {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">{isOwner ? "소유자 · 본사 관리모드" : "본사 관리모드"}</div>
+        <div className="eyebrow">{isOwner ? "본사 · 고객사 관리모드" : "고객사 관리모드"}</div>
         <h1>대시보드</h1>
         <div className="desc">
           매장을 누르면 그 매장의 관리모드로 들어가 <b>매장 관리자와 같은 권한</b>으로 설정하고 관리할 수 있습니다.
