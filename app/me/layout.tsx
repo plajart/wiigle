@@ -7,6 +7,7 @@ import Sidebar, { SidebarItem } from "../components/Sidebar";
 const ITEMS = [
   { href: "/me", label: "내 포인트", icon: "▤" },
   { href: "/me/history", label: "이용 내역", icon: "≡" },
+  { href: "/me/password", label: "비밀번호 변경", icon: "⚿" },
 ];
 
 // 본사/매장 관리자도 기본적으로 회원이며, 회원은 누구나 고객으로서 포인트를 적립/사용할 수 있다.

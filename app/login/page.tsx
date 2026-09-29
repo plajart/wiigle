@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
-export default function LoginPage() {
+function LoginForm() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const justReset = useSearchParams().get("reset") === "1";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,6 +49,7 @@ export default function LoginPage() {
           포인트 관리
         </div>
         <h1>로그인</h1>
+        {justReset && <p className="muted" style={{ marginBottom: 14 }}>비밀번호를 변경했습니다. 새 비밀번호로 로그인해주세요.</p>}
         <form onSubmit={onSubmit}>
           <div className="field">
             <label>휴대폰번호</label>
@@ -63,11 +65,21 @@ export default function LoginPage() {
           </button>
         </form>
         <p className="auth-foot">
+          <a href="/forgot-password">비밀번호를 잊으셨나요?</a>
+          <br />
           고객 계정이 없다면 <a href="/signup">가입하기</a>
           <br />
           매장을 운영하신다면 <a href="/store-signup">매장 등록 신청</a>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="auth-shell" />}>
+      <LoginForm />
+    </Suspense>
   );
 }

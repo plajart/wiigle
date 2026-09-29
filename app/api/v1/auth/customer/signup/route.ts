@@ -5,6 +5,8 @@ import Store from "@/lib/models/Store";
 import PendingCustomerSignup from "@/lib/models/PendingCustomerSignup";
 import { hashPassword } from "@/lib/auth";
 import { generateOtp } from "@/lib/otp";
+import { sendSms } from "@/lib/sms";
+import { checkNewPassword } from "@/lib/password";
 import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
 
 // 가입 요청 — 진짜 User는 아직 안 만든다(전화번호 소유를 OTP로 증명하기 전까지는
@@ -22,6 +24,8 @@ export async function POST(req: Request) {
     if (!phone || !name || !password) {
       return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
     }
+    const pwError = checkNewPassword(password);
+    if (pwError) return NextResponse.json({ error: pwError }, { status: 400 });
     const dup = await User.findOne({ phone });
     if (dup) return NextResponse.json({ error: "PHONE_ALREADY_USED" }, { status: 409 });
 
@@ -42,8 +46,9 @@ export async function POST(req: Request) {
       { upsert: true, setDefaultsOnInsert: true }
     );
 
-    // TODO: 실제 SMS 프로바이더 연동 전까지는 개발자가 DB(pendingcustomersignups.otpCode)를
-    // 직접 확인해서 검증한다 — 응답에는 절대 코드를 내려주지 않는다(2026-09-29 보안점검).
+    // 문자로 발송한다(SMS_WEBHOOK_URL 미설정이면 발송되지 않음 — lib/sms.ts). 응답에는 절대 코드를
+    // 내려주지 않는다(2026-09-29 보안점검).
+    await sendSms(phone, `[포인트 관리] 가입 인증번호는 ${code} 입니다. 5분 안에 입력해주세요.`);
     return NextResponse.json({ ok: true, phone });
   } catch (e) {
     return handleApiError(e);
