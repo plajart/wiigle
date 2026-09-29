@@ -10,7 +10,7 @@ import ContextBar from "../components/ContextBar";
 
 export default async function StoreLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/login?next=/store");
   // manager는 자기 매장 고정, owner/admin은 운영자 화면에서 매장을 골라 들어온 것 — 셋 다
   // 아니면(권한 없는 일반회원 등) 접근 불가.
   if (session.role !== "manager" && session.role !== "owner" && session.role !== "admin") redirect("/me");

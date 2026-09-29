@@ -9,7 +9,11 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const justReset = useSearchParams().get("reset") === "1";
+  const searchParams = useSearchParams();
+  const justReset = searchParams.get("reset") === "1";
+  // 로그인 뒤 돌아갈 화면(예: 대표 포스기 바로가기가 연 /store). 같은 사이트 안의 경로만 허용한다(외부 주소로 보내는 공격 방지).
+  const nextParam = searchParams.get("next");
+  const nextPath = nextParam && /^\/[A-Za-z0-9_\-\/]*$/.test(nextParam) && !nextParam.startsWith("//") ? nextParam : null;
   const [initialNotice, setInitialNotice] = useState<string | null>(null);
 
   // 매장에서 포인트가 적립되어 계정이 만들어진 손님은, 처음 로그인할 때 여기서 임의 초기 비밀번호를 확인한다.
@@ -68,7 +72,7 @@ function LoginForm() {
       } catch {
         // localStorage 접근 불가 시 그냥 /me로
       }
-      router.push(data.firstLogin ? "/me/password" : pendingClaim ? `/claim/${pendingClaim}` : "/me");
+      router.push(data.firstLogin ? "/me/password" : pendingClaim ? `/claim/${pendingClaim}` : (nextPath ?? "/me"));
       router.refresh();
     } finally {
       setLoading(false);

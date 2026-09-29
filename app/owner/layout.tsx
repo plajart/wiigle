@@ -6,7 +6,7 @@ import { buildModeLinks } from "../components/modeLinks";
 // 본사(소유자, role=owner) 전용 영역 — 고객사·고객사 운영자 계정·고객앱 버전을 관리한다.
 export default async function OwnerLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/login?next=/owner");
   if (session.role !== "owner") redirect("/me");
 
   // 업무 흐름 순서: 고객사 목록(고객사 관리모드 진입) → 새로 들어온 등록 신청 처리 → 고객사 운영자 지정 → 플랫폼 설정

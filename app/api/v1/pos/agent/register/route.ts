@@ -26,8 +26,10 @@ export async function POST(req: Request) {
     const store = await Store.findById(provision.storeId).select("name").lean();
     if (!store) return NextResponse.json({ error: "STORE_NOT_FOUND" }, { status: 404 });
 
-    // 이 매장에 등록되는 첫 단말이면 자동으로 대표 포스기가 된다.
-    const isFirstTerminal = (await PosTerminal.countDocuments({ storeId: provision.storeId, status: "ACTIVE" })) === 0;
+    // 이 매장에 "사용 중인 대표 포스기"가 아직 없으면 자동으로 대표가 된다 — 매장의 첫 단말이거나, 대표를 해지한 뒤
+    // 새로 등록하는 경우. 이미 대표가 있으면 나머지 단말은 적립·사용만 한다.
+    const hasPrimary = await PosTerminal.exists({ storeId: provision.storeId, status: "ACTIVE", isPrimary: true });
+    const isFirstTerminal = !hasPrimary;
 
     const apiKey = crypto.randomBytes(24).toString("hex");
     const terminal = await PosTerminal.create({

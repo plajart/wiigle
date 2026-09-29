@@ -10,7 +10,7 @@ import ContextBar from "../components/ContextBar";
 // 고객사 관리모드 — 고객사 운영자(admin)는 자기 고객사, 본사(owner)는 본사 대시보드에서 골라 들어온 고객사.
 export default async function HqLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/login?next=/hq");
   if (session.role !== "owner" && session.role !== "admin") redirect("/me");
 
   // 본사가 고객사를 고르지 않고 들어오면 본사 대시보드(고객사 목록)로 보낸다.
