@@ -23,3 +23,34 @@ self.addEventListener("fetch", (event) => {
   }
   // 그 외(페이지/API)는 서비스워커가 손대지 않고 그대로 네트워크로 통과시킨다.
 });
+
+// ─── 앱 알림(웹 푸시) — 비밀번호 찾기 인증번호 등 ───────────────────────────────
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    // 형식이 다르면 아래 기본값으로 표시
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title || "포인트 관리", {
+      body: data.body || "",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      data: { url: data.url || "/" },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) {
+        if ("focus" in w) return w.focus();
+      }
+      return self.clients.openWindow(url);
+    })
+  );
+});

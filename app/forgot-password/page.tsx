@@ -11,6 +11,39 @@ const ERRORS: Record<string, string> = {
   PHONE_REQUIRED: "휴대폰번호를 확인해주세요.",
 };
 
+function urlBase64ToUint8Array(b64: string): Uint8Array<ArrayBuffer> {
+  const padded = (b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded);
+  const out = new Uint8Array(new ArrayBuffer(raw.length));
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// 이 기기(앱)로 알림을 받도록 등록한다. 알림 허용을 눌러야 하므로 버튼 클릭 안에서 호출해야 한다.
+// 결과: "on"=등록됨, "denied"=알림을 허용하지 않음, "unsupported"=이 기기·브라우저는 알림 미지원/미설정.
+async function registerThisDevice(phone: string): Promise<"on" | "denied" | "unsupported"> {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
+    const keyRes = await fetch("/api/v1/push/public-key");
+    if (!keyRes.ok) return "unsupported";
+    const { publicKey } = await keyRes.json();
+    const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (permission !== "granted") return "denied";
+    const reg = await navigator.serviceWorker.ready;
+    const sub =
+      (await reg.pushManager.getSubscription()) ??
+      (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) }));
+    const res = await fetch("/api/v1/auth/push/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, subscription: sub.toJSON() }),
+    });
+    return res.ok ? "on" : "unsupported";
+  } catch {
+    return "unsupported";
+  }
+}
+
 export default function ForgotPasswordPage() {
   const [step, setStep] = useState<"phone" | "reset">("phone");
   const [phone, setPhone] = useState("");
@@ -19,6 +52,7 @@ export default function ForgotPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pushState, setPushState] = useState<"on" | "denied" | "unsupported" | null>(null);
   const router = useRouter();
 
   async function requestCode(e: React.FormEvent) {
@@ -26,6 +60,8 @@ export default function ForgotPasswordPage() {
     setError(null);
     setLoading(true);
     try {
+      // 먼저 이 기기를 알림 대상으로 등록(알림 허용 창이 뜰 수 있음) → 그 다음 인증번호 요청
+      setPushState(await registerThisDevice(phone));
       const res = await fetch("/api/v1/auth/password/forgot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -78,7 +114,8 @@ export default function ForgotPasswordPage() {
         {step === "phone" ? (
           <form onSubmit={requestCode}>
             <p className="muted" style={{ marginBottom: 18 }}>
-              가입한 휴대폰번호로 인증번호를 문자로 보내드립니다.
+              가입한 휴대폰번호를 입력하고 &ldquo;인증번호 받기&rdquo;를 누른 뒤, 알림 허용을 선택하면 이 앱(기기)으로
+              인증번호를 보내드립니다.
             </p>
             <div className="field">
               <label>휴대폰번호</label>
@@ -92,7 +129,11 @@ export default function ForgotPasswordPage() {
         ) : (
           <form onSubmit={resetPassword}>
             <p className="muted" style={{ marginBottom: 18 }}>
-              {phone}로 인증번호를 보냈습니다(가입된 번호인 경우). 5분 안에 입력해주세요.
+              {pushState === "on"
+                ? "이 기기로 인증번호 알림을 보냈습니다(가입된 번호인 경우). 알림을 확인해 5분 안에 입력해주세요."
+                : pushState === "denied"
+                  ? "알림을 허용하지 않아 이 기기로는 받을 수 없습니다. 브라우저·앱 설정에서 알림을 허용한 뒤 인증번호를 다시 받아주세요."
+                  : "이 기기에서는 앱 알림을 쓸 수 없습니다. 문자 발송이 설정된 경우에만 인증번호를 받을 수 있습니다."}
             </p>
             <div className="field">
               <label>인증번호 6자리</label>
