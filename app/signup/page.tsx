@@ -4,11 +4,9 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 function SignupForm() {
-  const [step, setStep] = useState<"form" | "otp">("form");
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -34,27 +32,7 @@ function SignupForm() {
         );
         return;
       }
-      setStep("otp");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function onVerify(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/v1/auth/otp/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, code: otp }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "인증 실패");
-        return;
-      }
+      // 가입과 동시에 로그인된다 — 영수증 QR로 들어왔다면 카드 연결 화면으로, 아니면 내 포인트로.
       let pendingClaim: string | null = null;
       try {
         pendingClaim = localStorage.getItem("pendingClaimToken");
@@ -69,33 +47,6 @@ function SignupForm() {
     }
   }
 
-  if (step === "otp") {
-    return (
-      <div className="auth-shell">
-        <div className="auth-card">
-          <div className="auth-brand">
-            <span className="dot" />
-            포인트 관리
-          </div>
-          <h1>휴대폰 인증</h1>
-          <p className="muted" style={{ marginBottom: 18 }}>
-            {phone}로 인증번호를 보냈습니다.
-          </p>
-          <form onSubmit={onVerify}>
-            <div className="field">
-              <label>인증번호 6자리</label>
-              <input value={otp} onChange={(e) => setOtp(e.target.value)} required />
-            </div>
-            {error && <div className="error">{error}</div>}
-            <button type="submit" className="full" disabled={loading}>
-              {loading ? "확인 중..." : "인증하고 가입 완료"}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="auth-shell">
       <div className="auth-card">
@@ -104,7 +55,7 @@ function SignupForm() {
           포인트 관리
         </div>
         <h1>회원가입</h1>
-        {storeRef && <p className="faint" style={{ marginBottom: 14 }}>매장에서 안내받아 오셨네요 — 가입 후 매장에서 카드를 연결해드립니다.</p>}
+        {storeRef && <p className="faint" style={{ marginBottom: 14 }}>매장에서 안내받아 오셨네요 — 가입하신 휴대폰번호로 매장에서 결제하시면 포인트가 적립됩니다.</p>}
         <form onSubmit={onSignup}>
           <div className="field">
             <label>이름</label>

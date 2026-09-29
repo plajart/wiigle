@@ -2,54 +2,60 @@ import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import User from "@/lib/models/User";
 import Store from "@/lib/models/Store";
-import PendingCustomerSignup from "@/lib/models/PendingCustomerSignup";
-import { hashPassword } from "@/lib/auth";
-import { generateOtp } from "@/lib/otp";
-import { sendSms } from "@/lib/sms";
-import { checkNewPassword } from "@/lib/password";
+import { hashPassword, signSession, SESSION_COOKIE } from "@/lib/auth";
+import { issueDigitalCardNo } from "@/lib/card";
+import { checkNewPassword, normalizePhone } from "@/lib/password";
 import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
 
-// 가입 요청 — 진짜 User는 아직 안 만든다(전화번호 소유를 OTP로 증명하기 전까지는
-// PendingCustomerSignup에만 둔다, 2026-09-29 보안점검: 예전엔 가입 즉시 User(phone
-// unique)를 만들어버려서, OTP가 뭐든 상관없이 그 순간 그 번호를 선점해버리는 문제가
-// 있었음 — POS의 getOrCreateUserByPhone은 phoneVerified를 안 보고 존재만 보기 때문에
-// 실제 손님이 나중에 그 번호로 적립하면 선점한 계정이 가로채게 됨). 같은 번호로 다시
-// 요청하면 재발급(덮어쓰기)으로 처리 — 정상적인 재전송 요청도 있을 수 있어서.
+// 고객 자가가입 — 입력한 휴대폰번호와 비밀번호로 **바로 가입**하고 로그인한다(문자 인증 없음).
+//
+// 전화번호 소유를 확인하지 않으므로(phoneVerified=false), 신원 근거는 "매장에서 그 번호로 결제·적립이 확인되는 것"이다:
+// 계산원이 전화번호로 고객을 확인하고, 결제 때 카드 식별번호가 함께 기록된다. 이미 매장(POS)에서 만들어진 번호는
+// 여기서 가입할 수 없고(PHONE_ALREADY_USED) 로그인 화면의 "처음 로그인하시나요? 초기 비밀번호 확인"을 쓴다.
+// ⚠ 알려진 한계: 아직 어디에도 등록되지 않은 번호는 누구든 먼저 가입할 수 있다. 남용을 줄이려고 IP당 가입 횟수를 제한한다.
 export async function POST(req: Request) {
   try {
     rateLimit(`signup:${clientIp(req)}`, 5, 10 * 60 * 1000);
 
     await dbConnect();
-    const { phone, name, password, storeRef } = await req.json();
-    if (!phone || !name || !password) {
+    const { phone: rawPhone, name, password, storeRef } = await req.json();
+    const phone = normalizePhone(rawPhone);
+    const cleanName = typeof name === "string" ? name.trim().slice(0, 50) : "";
+    if (phone.length < 9 || !cleanName || !password) {
       return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
     }
     const pwError = checkNewPassword(password);
     if (pwError) return NextResponse.json({ error: pwError }, { status: 400 });
-    const dup = await User.findOne({ phone });
+
+    const dup = await User.findOne({ phone: { $in: [phone, String(rawPhone)] } }).select("_id").lean();
     if (dup) return NextResponse.json({ error: "PHONE_ALREADY_USED" }, { status: 409 });
 
     // 매장 고정 QR 스티커로 유입된 가입이면 참고용으로만 기록(있어도 없어도 가입엔 지장 없음)
     let referredByStore = undefined;
-    if (storeRef) {
-      const exists = await Store.exists({ _id: storeRef });
-      if (exists) referredByStore = storeRef;
+    if (storeRef && /^[a-f\d]{24}$/i.test(String(storeRef)) && (await Store.exists({ _id: storeRef }))) {
+      referredByStore = storeRef;
     }
 
-    const passwordHash = await hashPassword(password);
-    const code = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    let user;
+    try {
+      user = await User.create({
+        phone,
+        name: cleanName,
+        passwordHash: await hashPassword(password),
+        phoneVerified: false,
+        digitalCardNo: await issueDigitalCardNo(),
+        referredByStore,
+      });
+    } catch (e) {
+      // 같은 번호로 동시에 두 번 가입 — phone 유니크 인덱스 충돌
+      if ((e as { code?: number }).code === 11000) return NextResponse.json({ error: "PHONE_ALREADY_USED" }, { status: 409 });
+      throw e;
+    }
 
-    await PendingCustomerSignup.findOneAndUpdate(
-      { phone },
-      { phone, name, passwordHash, storeRef: referredByStore, otpCode: code, otpExpiresAt },
-      { upsert: true, setDefaultsOnInsert: true }
-    );
-
-    // 문자로 발송한다(SMS_WEBHOOK_URL 미설정이면 발송되지 않음 — lib/sms.ts). 응답에는 절대 코드를
-    // 내려주지 않는다(2026-09-29 보안점검).
-    await sendSms(phone, `[포인트 관리] 가입 인증번호는 ${code} 입니다. 5분 안에 입력해주세요.`);
-    return NextResponse.json({ ok: true, phone });
+    const token = await signSession({ sub: String(user._id), role: user.role, name: user.name });
+    const res = NextResponse.json({ ok: true });
+    res.cookies.set(SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 7 });
+    return res;
   } catch (e) {
     return handleApiError(e);
   }
