@@ -3,7 +3,7 @@ import { dbConnect } from "@/lib/mongodb";
 import { requireCompanyAdmin, ApiError } from "@/lib/rbac";
 import { assignManager } from "@/lib/account-assign";
 import { resolveCompanyId } from "@/lib/company-context";
-import Store from "@/lib/models/Store";
+import Store, { DEFAULT_POS_SCOPES } from "@/lib/models/Store";
 import Company from "@/lib/models/Company";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
       targetCompanyId = chosen;
     }
 
-    const store = await Store.create({ name, companyId: targetCompanyId, franchiseCode, posIntegration: { scopes: [] } });
+    const store = await Store.create({ name, companyId: targetCompanyId, franchiseCode, posIntegration: { scopes: [...DEFAULT_POS_SCOPES] } });
     await AuditLog.create({
       storeId: store._id,
       actorType: "HQ_ADMIN",

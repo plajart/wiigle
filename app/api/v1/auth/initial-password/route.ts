@@ -16,8 +16,8 @@ export async function POST(req: Request) {
     const phone = normalizePhone(rawPhone);
     if (phone.length < 9) return NextResponse.json({ error: "PHONE_REQUIRED" }, { status: 400 });
 
-    rateLimit(`initpw-ip:${clientIp(req)}`, 15, 10 * 60 * 1000);
-    rateLimit(`initpw-phone:${phone}`, 5, 60 * 60 * 1000);
+    rateLimit(`initpw-ip:${clientIp(req)}`, 120, 10 * 60 * 1000);
+    rateLimit(`initpw-phone:${phone}`, 10, 60 * 60 * 1000);
 
     await dbConnect();
     const user = await User.findOne({ phone: { $in: [phone, String(rawPhone)] } }).select("role initialPassword").lean();

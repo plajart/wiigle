@@ -55,12 +55,19 @@ async function companyIdOfStore(storeId: string): Promise<string> {
 // STORE 계좌는 (고객, 매장)으로, HQ(통합포인트) 계좌는 (고객, 고객사)로 하나씩 만든다.
 async function getOrCreateAccount(userId: string, storeId: string | null, type: "STORE" | "HQ", companyId: string) {
   const filter = type === "HQ" ? { userId, storeId: null, type, companyId } : { userId, storeId, type };
-  const account = await PointAccount.findOneAndUpdate(
-    filter,
-    { $setOnInsert: { userId, storeId, type, companyId, balance: 0 } },
-    { upsert: true, new: true }
-  );
-  return account;
+  // 같은 계좌를 처음 만드는 요청이 동시에 두 개 오면 유니크 인덱스 충돌(11000)이 날 수 있다 — 한 번 더 조회하면 이미 만들어져 있다.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await PointAccount.findOneAndUpdate(
+        filter,
+        { $setOnInsert: { userId, storeId, type, companyId, balance: 0 } },
+        { upsert: true, new: true }
+      );
+    } catch (e) {
+      if ((e as { code?: number }).code !== 11000 || attempt === 2) throw e;
+    }
+  }
+  throw new ApiError(500, "ACCOUNT_CREATE_FAILED");
 }
 
 async function atomicDebit(accountId: Types.ObjectId, amount: number) {
@@ -566,7 +573,10 @@ export async function applyVendorSync(
 
 // 회원이면 누구나(본사·고객사 운영자·매장 관리자 포함) 고객으로서 조회될 수 있다 — role 구분 없음.
 export async function lookupCustomerByPhone(phone: string) {
-  return User.findOne({ phone }).lean();
+  const raw = String(phone ?? "").trim();
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (!digits) return null;
+  return User.findOne({ phone: { $in: [...new Set([raw, digits])] } }).lean();
 }
 
 /**
@@ -578,7 +588,7 @@ export async function lookupCustomerByPhone(phone: string) {
  * 원문은 지워져 이후에는 어디에도 안내하지 않는다. 적립·사용은 계산원이 전화번호를 확인해 처리하므로 로그인 없이도 문제가 없다.
  */
 export async function getOrCreateUserByPhone(phone: string) {
-  const trimmed = phone.replace(/[^0-9]/g, "");
+  const trimmed = String(phone ?? "").replace(/[^0-9]/g, "");
   if (!trimmed || trimmed.length < 9) throw new ApiError(400, "INVALID_PHONE");
   const existing = await User.findOne({ phone: trimmed });
   if (existing) return existing;
@@ -792,9 +802,13 @@ export async function posAgentRedeemLookup(storeId: string, terminalId: string, 
     await RedeemLock.create({ userId: customerId, storeId, terminalId });
   } catch (e) {
     if ((e as { code?: number }).code === 11000) {
-      throw new ApiError(409, "REDEEM_IN_PROGRESS_ELSEWHERE");
+      // 같은 포스기가 같은 손님을 다시 조회하는 것(전화번호를 잘못 눌렀다 다시 조회, 팝업을 닫았다 다시 열기 등)은 막지 않고
+      // 잠금 시간만 갱신한다. 다른 포스기가 잡고 있을 때만 이중사용 방지를 위해 거부한다.
+      const held = await RedeemLock.findOneAndUpdate({ userId: customerId, terminalId }, { $set: { lockedAt: new Date() } });
+      if (!held) throw new ApiError(409, "REDEEM_IN_PROGRESS_ELSEWHERE");
+    } else {
+      throw e;
     }
-    throw e;
   }
 
   const availableBalance = await getAvailableForStore(customerId, storeId);

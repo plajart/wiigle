@@ -8,6 +8,12 @@ export function handleApiError(e: unknown) {
   if (e instanceof ApiError) {
     return NextResponse.json({ error: e.message }, { status: e.status });
   }
+  const err = e as { name?: string; code?: number };
+  // 요청 자체가 잘못된 경우는 서버 오류(500)가 아니라 4xx로 돌려준다 — 화면·에이전트가 원인을 구분할 수 있게.
+  if (e instanceof SyntaxError) return NextResponse.json({ error: "INVALID_JSON" }, { status: 400 }); // 깨진 JSON 본문
+  if (err.name === "CastError") return NextResponse.json({ error: "INVALID_ID" }, { status: 400 }); // 형식이 틀린 ID
+  if (err.name === "ValidationError") return NextResponse.json({ error: "INVALID_INPUT" }, { status: 400 });
+  if (err.code === 11000) return NextResponse.json({ error: "DUPLICATE" }, { status: 409 }); // 유니크 키 충돌
   console.error(e);
   return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
 }

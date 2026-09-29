@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type CompanySummary = {
   companyId: string;
@@ -16,15 +16,38 @@ export default function MeDashboardClient() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [card, setCard] = useState<CardInfo | null>(null);
   const [showCard, setShowCard] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [cardError, setCardError] = useState(false);
+
+  // 서버 응답을 확인하지 않고 그대로 화면에 쓰면, 로그인이 만료됐을 때(401) 오류 본문이 들어가 화면이 깨진다.
+  const load = useCallback(() => {
+    setError(null);
+    fetch("/api/v1/me/points")
+      .then(async (r) => {
+        if (r.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const d = await r.json().catch(() => null);
+        if (!r.ok || !d || !Array.isArray(d.companies)) {
+          setError("포인트를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+          return;
+        }
+        setSummary(d as Summary);
+      })
+      .catch(() => setError("네트워크 연결을 확인해주세요."));
+    fetch("/api/v1/me/card")
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        if (r.ok && d && typeof d.cardNo === "string") setCard(d as CardInfo);
+        else setCardError(true);
+      })
+      .catch(() => setCardError(true));
+  }, []);
 
   useEffect(() => {
-    fetch("/api/v1/me/points")
-      .then((r) => r.json())
-      .then(setSummary);
-    fetch("/api/v1/me/card")
-      .then((r) => r.json())
-      .then(setCard);
-  }, []);
+    load();
+  }, [load]);
 
   return (
     <div>
@@ -54,10 +77,18 @@ export default function MeDashboardClient() {
             </div>
           </div>
         )}
-        {showCard && !card && <p className="muted">불러오는 중...</p>}
+        {showCard && !card && <p className="muted">{cardError ? "회원카드를 불러오지 못했습니다. 잠시 후 다시 시도해주세요." : "불러오는 중..."}</p>}
       </div>
 
-      {!summary && <p className="muted">불러오는 중...</p>}
+      {error && (
+        <div className="card">
+          <p className="error" style={{ margin: 0 }}>{error}</p>
+          <button type="button" className="sm secondary" style={{ marginTop: 10 }} onClick={load}>
+            다시 시도
+          </button>
+        </div>
+      )}
+      {!summary && !error && <p className="muted">불러오는 중...</p>}
 
       {summary && summary.companies.length === 0 && (
         <div className="card">

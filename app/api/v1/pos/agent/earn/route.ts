@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const phone: string = body.phone;
+    const phone: string = typeof body.phone === "string" || typeof body.phone === "number" ? String(body.phone) : "";
     const addAmount: number = Number(body.addAmount);
     const saleAmount: number | undefined = typeof body.saleAmount === "number" ? body.saleAmount : undefined;
     const cardNo: string | undefined = body.cardNo || undefined;
@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     const existingVendorBalance: number | null = typeof body.existingVendorBalance === "number" ? body.existingVendorBalance : null;
     if (!phone) return NextResponse.json({ error: "PHONE_REQUIRED" }, { status: 400 });
     if (!vendorTxnId) return NextResponse.json({ error: "VENDOR_TXN_ID_REQUIRED" }, { status: 400 });
+    if (!Number.isFinite(addAmount) || addAmount <= 0) return NextResponse.json({ error: "INVALID_AMOUNT" }, { status: 400 });
 
     const result = await posAgentEarn({ storeId, terminalId, phone, addAmount, saleAmount, cardNo, vendorTxnId, existingVendorBalance });
     return NextResponse.json({ ok: true, ...result });

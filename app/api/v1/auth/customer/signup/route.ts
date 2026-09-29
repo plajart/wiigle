@@ -15,7 +15,7 @@ import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
 // ⚠ 알려진 한계: 아직 어디에도 등록되지 않은 번호는 누구든 먼저 가입할 수 있다. 남용을 줄이려고 IP당 가입 횟수를 제한한다.
 export async function POST(req: Request) {
   try {
-    rateLimit(`signup:${clientIp(req)}`, 5, 10 * 60 * 1000);
+    rateLimit(`signup:${clientIp(req)}`, 60, 10 * 60 * 1000); // 매장 QR로 여러 고객이 같은 와이파이(같은 IP)에서 가입할 수 있다
 
     await dbConnect();
     const { phone: rawPhone, name, password, storeRef } = await req.json();

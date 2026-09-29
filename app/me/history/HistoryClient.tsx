@@ -38,11 +38,23 @@ const TYPE_BADGE_CLASS: Record<string, string> = {
 
 export default function HistoryClient() {
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/v1/me/points/history")
-      .then((r) => r.json())
-      .then((d) => setHistory(d.history ?? []));
+      .then(async (r) => {
+        if (r.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const d = await r.json().catch(() => null);
+        if (!r.ok || !d || !Array.isArray(d.history)) {
+          setError("이용 내역을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+          return;
+        }
+        setHistory(d.history as HistoryItem[]);
+      })
+      .catch(() => setError("네트워크 연결을 확인해주세요."));
   }, []);
 
   return (
@@ -53,7 +65,8 @@ export default function HistoryClient() {
       </div>
 
       <div className="card">
-        {history === null && <p className="muted">불러오는 중...</p>}
+        {error && <p className="error" style={{ margin: 0 }}>{error}</p>}
+        {history === null && !error && <p className="muted">불러오는 중...</p>}
         {history?.length === 0 && (
           <div className="empty-state">
             <div className="ic">≡</div>

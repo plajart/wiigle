@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireOwner } from "@/lib/rbac";
 import Company from "@/lib/models/Company";
-import Store from "@/lib/models/Store";
+import Store, { DEFAULT_POS_SCOPES } from "@/lib/models/Store";
 import User from "@/lib/models/User";
 import AuditLog from "@/lib/models/AuditLog";
 import StoreApplication from "@/lib/models/StoreApplication";
@@ -43,7 +43,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       name: application.storeName,
       companyId: company._id,
       franchiseCode: application.franchiseCode,
-      posIntegration: { scopes: [] },
+      posIntegration: { scopes: [...DEFAULT_POS_SCOPES] },
     });
 
     const digitalCardNo = await issueDigitalCardNo();

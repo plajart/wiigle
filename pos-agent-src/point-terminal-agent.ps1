@@ -75,6 +75,37 @@ function Start-AgentLog {
     } catch { }
 }
 
+# 서버·포스DB 오류를 계산원이 이해할 수 있는 문구로 바꾼다(기술 용어·영문 오류를 그대로 보여주지 않는다). 자세한 내용은 agent.log에 남는다.
+function Get-FriendlyError($err) {
+    $status = 0
+    try { $status = [int]$err.Exception.Response.StatusCode } catch { }
+    $code = $null
+    try { $code = ($err.ErrorDetails.Message | ConvertFrom-Json).error } catch { }
+    if ($status -eq 0) { return "서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해주세요." }
+    switch ($code) {
+        "TERMINAL_REVOKED" { return "이 포스기의 등록이 해지되었습니다. 매장 관리자에게 문의해주세요." }
+        "INVALID_API_KEY" { return "이 포스기의 등록 정보가 올바르지 않습니다. 매장 관리자에게 문의해주세요." }
+        "WRITE_REDEEM_NOT_CONSENTED" { return "이 매장은 포인트 사용이 꺼져 있습니다. 매장 관리모드의 'POS 연동 동의'에서 켜주세요." }
+        "WRITE_EARN_NOT_CONSENTED" { return "이 매장은 포인트 적립이 꺼져 있습니다. 매장 관리모드의 'POS 연동 동의'에서 켜주세요." }
+        "STORE_HAS_NO_COMPANY" { return "매장 정보가 아직 정리되지 않았습니다. 본사에 문의해주세요." }
+        "REDEEM_IN_PROGRESS_ELSEWHERE" { return "이 손님은 지금 다른 포스기에서 포인트를 사용 중입니다.`n잠시 후 다시 조회해주세요." }
+        "INVALID_PHONE" { return "전화번호를 확인해주세요." }
+    }
+    return "일시적인 오류입니다. 잠시 후 다시 시도해주세요."
+}
+
+# 회원의 전화번호 — 대표번호(MEM_REP_TEL)를 먼저, 없거나 짧으면 MEM_TEL_1. 숫자만 남겨 9자리 이상이어야 전화번호로 본다
+# (짧은 값·메모는 전화번호가 아니다). 일괄 이전과 적립이 같은 규칙을 써야 같은 손님이 같은 계정에 쌓인다.
+function Resolve-MemberPhone($rep, $tel1) {
+    foreach ($cand in @($rep, $tel1)) {
+        if ($cand) {
+            $digits = ("$cand" -replace '[^0-9]', '')
+            if ($digits.Length -ge 9) { return $digits }
+        }
+    }
+    return $null
+}
+
 # ─── 설정 ────────────────────────────────────────────────────────────────────
 
 function Load-Config {
@@ -118,7 +149,8 @@ function Show-TerminalList {
     try {
         $res = Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos/agent/terminals" -Headers $AuthHeader
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("포스기 목록을 불러오지 못했습니다.`n$_", "포인트 관리 프로그램") | Out-Null
+        Write-Host "포스기 목록 조회 실패: $_"
+        [System.Windows.Forms.MessageBox]::Show("포스기 목록을 불러오지 못했습니다.`n$(Get-FriendlyError $_)", "포인트 관리 프로그램") | Out-Null
         return
     }
     $form = New-Object System.Windows.Forms.Form
@@ -331,8 +363,7 @@ function Invoke-InitialBulkImport {
     $withPhone = @()
     $noPhoneMembers = @()
     foreach ($m in $members) {
-        $phone = $null
-        if ($m.MEM_REP_TEL) { $phone = $m.MEM_REP_TEL } elseif ($m.MEM_TEL_1) { $phone = $m.MEM_TEL_1 }
+        $phone = Resolve-MemberPhone $m.MEM_REP_TEL $m.MEM_TEL_1
         if ($phone) {
             $withPhone += @{ memNo = $m.MEM_NO; phone = $phone; cardNo = $m.MEM_CARD_NO; balance = [double]$m.MEM_USABLE_PNT }
         } else {
@@ -437,15 +468,11 @@ function Show-RedeemPopup {
                 -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
         } catch {
             # 같은 손님을 다른 포스기에서 이미 조회 중이면 서버가 409로 거부한다(이중사용 방지, 2026-09-28).
-            $errBody = $null
-            try { $errBody = ($_.ErrorDetails.Message | ConvertFrom-Json) } catch {}
-            if ($errBody -and $errBody.error -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
-                $lblResult.Text = "이 손님은 지금 다른 포스기에서 포인트를 사용 중입니다.`n잠시 후 다시 조회해주세요."
-            } else {
-                $lblResult.Text = "서버 조회 실패: $_"
-            }
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') 사용 조회 실패: $_"
+            $lblResult.Text = Get-FriendlyError $_
             return
         }
+        try {
         $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
         if ($members.Count -eq 0) {
             $lblResult.Text = "가용 포인트: $($res.availableBalance)원`n(주의: 이 손님은 챔프에 회원으로 등록돼 있지 않아 챔프 화면에서 포인트결제를 쓸 수 없습니다. 먼저 챔프에서 신규회원등록을 해주세요.)"
@@ -460,6 +487,11 @@ function Show-RedeemPopup {
         Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
         $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = [double]$res.availableBalance; at = Get-Date; phone = $phone }
         $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 더했습니다(화면 표시 $([int]$newLocal)원).`n계산원님, 챔프에서 포인트결제를 진행하세요."
+        } catch {
+            # 챔프(포스DB) 조회·수정이 실패한 경우 — 화면이 멈추거나 오류창이 뜨지 않고 안내만 보여준다.
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') 포스DB 처리 실패(사용 조회): $_" -ForegroundColor Red
+            $lblResult.Text = "포스 프로그램(챔프)과 연결하지 못했습니다. 챔프가 켜져 있는지 확인하고 다시 조회해주세요."
+        }
     })
     $btnClose.Add_Click({ $form.Close() })
 
@@ -511,10 +543,7 @@ function Process-Queue {
         try {
             $member = Champ-Query "SELECT MEM_TEL_1, MEM_REP_TEL FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
             $phone = $null
-            if ($member.Count -gt 0) {
-                if ($member[0].MEM_TEL_1) { $phone = $member[0].MEM_TEL_1 }
-                elseif ($member[0].MEM_REP_TEL) { $phone = $member[0].MEM_REP_TEL }
-            }
+            if ($member.Count -gt 0) { $phone = Resolve-MemberPhone $member[0].MEM_REP_TEL $member[0].MEM_TEL_1 }
 
             if ($phone) {
                 if ([double]$r.MEMP_ADD_AMT -gt 0) {
@@ -546,8 +575,21 @@ function Process-Queue {
             Restore-SwappedIfDone $memNo
             Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
         } catch {
-            Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 처리 실패(CRAB_SEQ=$($r.CRAB_SEQ)): $_" -ForegroundColor Red
-            # 처리 실패 건은 PROCESSED='Y'로 안 바꿔서 다음 순회에 재시도(멱등키가 있어 서버 쪽 중복 반영은 안 됨)
+            $qerr = $_
+            $qstatus = 0
+            try { $qstatus = [int]$qerr.Exception.Response.StatusCode } catch { }
+            if ($qstatus -eq 400) {
+                # 서버가 "이 데이터는 처리할 수 없다"고 확정한 경우(잘못된 값) — 계속 재시도하면 같은 오류만 반복되므로 건너뛴다.
+                # 포스 잔액은 건드리지 않는다(서버에 반영되지 않은 건이므로 그대로 둔다).
+                Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 항목 건너뜀(서버가 거부, CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Yellow
+                try {
+                    Restore-SwappedIfDone $memNo
+                    Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
+                } catch { }
+            } else {
+                Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 처리 실패(CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Red
+                # 일시적인 실패(인터넷 끊김 등)는 PROCESSED='Y'로 안 바꿔서 다음 순회에 재시도(멱등키가 있어 서버 쪽 중복 반영은 안 됨)
+            }
         }
     }
     Restore-TimedOutSwaps

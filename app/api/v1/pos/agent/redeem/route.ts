@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const phone: string = body.phone;
+    const phone: string = typeof body.phone === "string" || typeof body.phone === "number" ? String(body.phone) : "";
     if (!phone) return NextResponse.json({ error: "PHONE_REQUIRED" }, { status: 400 });
 
     if (body.action === "lookup") {
@@ -28,6 +28,7 @@ export async function POST(req: Request) {
       const cardNo: string | undefined = body.cardNo || undefined;
       const vendorTxnId: string = body.vendorTxnId;
       if (!vendorTxnId) return NextResponse.json({ error: "VENDOR_TXN_ID_REQUIRED" }, { status: 400 });
+      if (!Number.isFinite(usedAmount) || usedAmount <= 0) return NextResponse.json({ error: "INVALID_AMOUNT" }, { status: 400 });
       const result = await posAgentRedeemApply({ storeId, terminalId, phone, usedAmount, cardNo, vendorTxnId });
       return NextResponse.json({ ok: true, ...result });
     }

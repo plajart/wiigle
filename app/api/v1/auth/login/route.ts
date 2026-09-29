@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     const { phone, password } = await req.json();
     if (!phone || !password) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
 
-    rateLimit(`login-ip:${clientIp(req)}`, 20, 10 * 60 * 1000);
+    rateLimit(`login-ip:${clientIp(req)}`, 200, 10 * 60 * 1000); // 같은 매장 와이파이의 여러 고객 — 번호별 제한(아래)이 무차별 대입을 막는다
     rateLimit(`login-phone:${phone}`, 10, 10 * 60 * 1000);
 
     // 하이픈 등을 넣어 입력해도 찾을 수 있게(가입 때 입력한 그대로 저장된 번호도 함께 조회)

@@ -93,6 +93,16 @@ async function main() {
     await users.updateMany(storeAdminFilter, [{ $set: { role: "manager", storeManagerOf: "$storeAdminOf" } }]);
   }
 
+  // 5. 포스 연동 기본 동의 — 새 매장은 이제 처음부터 켜진 채 만들어진다(lib/models/Store.ts DEFAULT_POS_SCOPES). 이미 만들어진 매장 중
+  //    동의 항목이 하나도 없는(=한 번도 켠 적 없는) 매장만 같은 기본값으로 켠다. 일부라도 켜 둔 매장은 매장의 선택이므로 건드리지 않는다.
+  const DEFAULT_SCOPES = ["read_balance", "read_history", "write_redeem", "write_earn", "accept_transfer"];
+  const scopeFilter = { $or: [{ "posIntegration.scopes": { $exists: false } }, { "posIntegration.scopes": { $size: 0 } }] };
+  const scopeCount = await stores.countDocuments(scopeFilter);
+  console.log(`포스 연동 동의가 비어 있는 매장 → 기본값으로 켬: ${scopeCount}개`);
+  if (APPLY && scopeCount > 0) {
+    await stores.updateMany(scopeFilter, { $set: { "posIntegration.scopes": DEFAULT_SCOPES } });
+  }
+
   await mongoose.disconnect();
   console.log("완료");
 }
