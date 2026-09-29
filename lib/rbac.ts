@@ -15,15 +15,6 @@ export class ApiError extends Error {
 export async function requireSession(): Promise<SessionPayload> {
   const session = await getFreshSession();
   if (!session) throw new ApiError(401, "UNAUTHENTICATED");
-  // 비밀번호를 비워둔 채 들어온 권한 계정(예: 최초 소유자)은 비밀번호를 정하기 전까지 아무것도 할 수 없다.
-  if (session.pwUnset && session.role !== "user") throw new ApiError(403, "PASSWORD_SETUP_REQUIRED");
-  return session;
-}
-
-// 비밀번호 설정 자체를 하는 라우트용 — 비밀번호 미설정 세션도 통과시킨다.
-export async function requireSessionAllowUnsetPassword(): Promise<SessionPayload> {
-  const session = await getFreshSession();
-  if (!session) throw new ApiError(401, "UNAUTHENTICATED");
   return session;
 }
 

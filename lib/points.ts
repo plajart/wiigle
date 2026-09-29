@@ -492,9 +492,9 @@ export async function lookupCustomerByPhone(phone: string) {
  * 전화번호로 고객을 찾고, 없으면 그 자리에서 새로 만든다(2026-09-27 결정: 카드는 신원
  * 증거로 쓰지 않고 전화번호만이 신원 근거이므로, 적립/사용 흐름 어디서든 전화번호가
  * 확인되면 곧바로 계정이 있어야 한다 — 계산원이 별도 "가입 승인" 단계를 거칠 필요 없음).
- * 새로 만든 계정은 비밀번호를 비워 둔다(passwordHash=""). 손님이 나중에 로그인 화면에서
- * 전화번호만 넣고(비밀번호는 비워둔 채) 들어와 고객 관리모드에서 비밀번호를 정하면 된다.
- * 적립·사용은 계산원이 전화번호를 확인해 처리하므로 로그인 없이도 문제가 없다.
+ * 새로 만든 계정에는 임의 초기 비밀번호를 부여한다. 손님이 웹에서 처음 로그인할 때 로그인 화면이 그 비밀번호를
+ * 알려주고(`/api/v1/auth/initial-password`), 그 비밀번호로 로그인한 뒤 변경하도록 한 번 안내한다. 로그인이 성공하면
+ * 원문은 지워져 이후에는 어디에도 안내하지 않는다. 적립·사용은 계산원이 전화번호를 확인해 처리하므로 로그인 없이도 문제가 없다.
  */
 export async function getOrCreateUserByPhone(phone: string) {
   const trimmed = phone.replace(/[^0-9]/g, "");
@@ -503,11 +503,15 @@ export async function getOrCreateUserByPhone(phone: string) {
   if (existing) return existing;
 
   const { issueDigitalCardNo } = await import("./card");
+  const { newInitialCredentials } = await import("./initial-password");
+  const creds = await newInitialCredentials();
   const digitalCardNo = await issueDigitalCardNo();
   try {
     return await User.create({
       phone: trimmed,
-      passwordHash: "",
+      passwordHash: creds.hash,
+      initialPassword: creds.plain,
+      firstLogin: true,
       name: "포인트 손님",
       digitalCardNo,
     });

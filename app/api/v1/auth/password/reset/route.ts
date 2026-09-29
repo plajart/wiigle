@@ -46,7 +46,7 @@ export async function POST(req: Request) {
 
     const passwordHash = await hashPassword(newPassword);
     // 문자를 받은 본인임이 확인됐으므로 전화번호 인증도 완료로 표시한다.
-    const user = await User.findOneAndUpdate({ phone }, { passwordHash, phoneVerified: true });
+    const user = await User.findOneAndUpdate({ phone }, { passwordHash, phoneVerified: true, firstLogin: false, $unset: { initialPassword: "" } });
     if (!user) return NextResponse.json({ error: "INVALID_OR_EXPIRED_CODE" }, { status: 400 });
 
     return NextResponse.json({ ok: true });

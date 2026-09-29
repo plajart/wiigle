@@ -1,18 +1,22 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { requireSessionAllowUnsetPassword } from "@/lib/rbac";
+import { requireSession } from "@/lib/rbac";
 import User from "@/lib/models/User";
 import { hashPassword, verifyPassword, signSession, SESSION_COOKIE } from "@/lib/auth";
+import { verifySession } from "@/lib/auth";
 import { checkNewPassword } from "@/lib/password";
 import { handleApiError, rateLimit } from "@/lib/api-utils";
+import { cookies } from "next/headers";
 
-// 로그인한 회원이 비밀번호를 바꾼다. 이미 비밀번호가 있으면 현재 비밀번호를 한 번 더 확인하고,
-// 아직 정하지 않은 계정(매장에서 만들어져 비워둔 채 로그인한 손님)은 확인 없이 처음 정한다.
-// 처음 정한 뒤에는 "비밀번호 미설정" 표시가 빠진 새 세션으로 바꿔 준다.
+const FIRST_LOGIN_WINDOW_SEC = 60 * 60; // 초기 비밀번호로 방금 로그인한 세션이 현재 비밀번호 없이 바꿀 수 있는 시간
+
+// 로그인한 회원이 비밀번호를 바꾼다 — 현재 비밀번호를 한 번 더 확인한다.
+// 단, 초기·임시 비밀번호로 **방금(1시간 이내) 첫 로그인한 세션**은 그 비밀번호를 이미 입력했으므로 현재 비밀번호 확인을
+// 생략한다(안내 화면에서 바로 변경). 바꾸고 나면 그 표시가 빠진 새 세션으로 교체한다.
 export async function POST(req: Request) {
   try {
     await dbConnect();
-    const session = await requireSessionAllowUnsetPassword();
+    const session = await requireSession();
     rateLimit(`pw-change:${session.sub}`, 10, 10 * 60 * 1000);
 
     const { currentPassword, newPassword } = await req.json();
@@ -23,8 +27,16 @@ export async function POST(req: Request) {
     const user = await User.findById(session.sub);
     if (!user) return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
 
-    const firstTime = !user.passwordHash;
-    if (!firstTime) {
+    // 세션 토큰의 발급 시각으로 "방금 로그인"인지 확인(fl 표시는 로그인 때만 붙는다)
+    let recentFirstLogin = false;
+    if (session.fl) {
+      const token = (await cookies()).get(SESSION_COOKIE)?.value;
+      const payload = token ? await verifySession(token) : null;
+      const iat = (payload as unknown as { iat?: number } | null)?.iat;
+      recentFirstLogin = typeof iat === "number" && Date.now() / 1000 - iat < FIRST_LOGIN_WINDOW_SEC;
+    }
+
+    if (!recentFirstLogin) {
       if (!currentPassword) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
       if (currentPassword === newPassword) return NextResponse.json({ error: "SAME_PASSWORD" }, { status: 400 });
       if (!(await verifyPassword(String(currentPassword), user.passwordHash))) {
@@ -33,10 +45,12 @@ export async function POST(req: Request) {
     }
 
     user.passwordHash = await hashPassword(newPassword);
+    user.initialPassword = undefined;
+    user.firstLogin = false;
     await user.save();
 
-    const res = NextResponse.json({ ok: true, firstTime });
-    if (session.pwUnset) {
+    const res = NextResponse.json({ ok: true });
+    if (session.fl) {
       const token = await signSession({
         sub: String(user._id),
         role: user.role,

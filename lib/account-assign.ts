@@ -13,10 +13,10 @@ import { ApiError } from "./rbac";
  *
  * 규칙
  *  - 한 계정은 하나의 등급만 갖는다(user/manager/admin/owner). 소유자·(다른 등급) 계정은 여기서 바꾸지 않는다.
- *  - 이미 가입한 회원이면 그 계정을 승격한다. 가입 안 한 번호면 이름을 받아 계정을 새로 만든다 — 문자 인증이
- *    없어 본인이 먼저 가입할 수 없기 때문. 새로 만들거나, 비밀번호가 비어 있던 계정(매장 POS로 만들어진 손님)을
- *    승격할 때는 **임시 비밀번호를 발급해 한 번만 돌려준다**(권한 계정이 비밀번호 없이 남지 않게).
- *  - 전달받은 임시 비밀번호는 지정한 사람이 본인에게 안전하게 전해야 하고, 본인은 로그인 후 바꾸면 된다.
+ *  - 이미 가입한 회원이면 그 계정을 승격한다(본인 비밀번호 그대로). 가입 안 한 번호면 이름을 받아 계정을 새로 만든다 —
+ *    문자 인증이 없어 본인이 먼저 가입할 수 없기 때문. 새로 만들 때는 **임의 임시 비밀번호를 부여해 지정한 사람에게
+ *    한 번만 알려준다**(권한 계정의 비밀번호는 로그인 화면에서 공개하지 않는다). 지정한 사람이 본인에게 안전하게
+ *    전하고, 본인은 그 비밀번호로 로그인한 뒤 변경하도록 첫 로그인 때 한 번 안내한다.
  */
 export type AssignResult = { userId: string; name: string; phone: string; created: boolean; tempPassword?: string };
 
@@ -42,6 +42,7 @@ async function createAccount(phone: string, name: unknown, fields: Record<string
     passwordHash,
     phoneVerified: true,
     digitalCardNo: await issueDigitalCardNo(),
+    firstLogin: true, // 임시 비밀번호로 처음 로그인하면 "비밀번호를 변경하세요" 안내를 한 번 보여준다
     ...fields,
   });
   return { user, tempPassword };
@@ -69,7 +70,9 @@ export async function assignManager(storeId: string, rawPhone: unknown, name?: u
     const t = await newTempPassword();
     user.passwordHash = t.passwordHash;
     tempPassword = t.tempPassword;
+    user.firstLogin = true;
   }
+  user.initialPassword = undefined; // 권한 계정이 되면 로그인 화면이 초기 비밀번호를 알려주지 않게
   user.role = "manager";
   user.storeManagerOf = store._id;
   user.companyAdminOf = undefined;
@@ -106,7 +109,9 @@ export async function assignCompanyAdmin(companyId: string, rawPhone: unknown, n
     const t = await newTempPassword();
     user.passwordHash = t.passwordHash;
     tempPassword = t.tempPassword;
+    user.firstLogin = true;
   }
+  user.initialPassword = undefined; // 권한 계정이 되면 로그인 화면이 초기 비밀번호를 알려주지 않게
   user.role = "admin";
   user.companyAdminOf = company._id;
   user.storeManagerOf = undefined;

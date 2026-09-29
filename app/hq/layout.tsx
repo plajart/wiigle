@@ -10,7 +10,6 @@ import ContextBar from "../components/ContextBar";
 export default async function HqLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
   if (!session) redirect("/login");
-  if (session.pwUnset) redirect("/me/password"); // 비밀번호를 정하기 전에는 관리 화면 불가
   if (session.role !== "owner" && session.role !== "admin") redirect("/me");
 
   // 소유자가 고객사를 고르지 않고 들어오면 소유자 대시보드(고객사 목록)로 보낸다.

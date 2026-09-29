@@ -6,7 +6,6 @@ import Sidebar, { SidebarItem } from "../components/Sidebar";
 export default async function OwnerLayout({ children }: { children: React.ReactNode }) {
   const session = await getFreshSession();
   if (!session) redirect("/login");
-  if (session.pwUnset) redirect("/me/password"); // 비밀번호를 정하기 전에는 관리 화면 불가
   if (session.role !== "owner") redirect("/me");
 
   const items: SidebarItem[] = [

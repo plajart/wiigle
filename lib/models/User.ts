@@ -22,7 +22,12 @@ export type UserRole = "owner" | "admin" | "manager" | "user";
 export interface IUser {
   _id: Types.ObjectId;
   phone: string;
-  passwordHash: string; // ""이면 아직 비밀번호를 정하지 않은 계정(매장에서 포인트가 적립돼 만들어진 손님) — 첫 로그인 때 비워두고 들어와 정한다
+  passwordHash: string;
+  // 매장(POS)에서 자동으로 만들어진 손님 계정의 임의 초기 비밀번호 원문 — 손님이 웹에서 처음 로그인할 때 화면에 안내하려고
+  // 저장한다. 첫 로그인이 성공하거나 비밀번호를 바꾸면 지운다(그 뒤로는 어디에도 안내하지 않는다). 일반 고객(user)에만 둔다.
+  initialPassword?: string;
+  // 임시/초기 비밀번호를 받은 계정이 아직 첫 로그인을 하지 않았다는 표시 — 첫 로그인 직후 "비밀번호를 변경하세요" 안내를 한 번만 하려는 것.
+  firstLogin?: boolean;
   name: string;
   role: UserRole;
   companyAdminOf?: Types.ObjectId; // role="admin"일 때 — 관리하는 고객사(본사)
@@ -38,7 +43,9 @@ export interface IUser {
 
 const UserSchema = new Schema<IUser>({
   phone: { type: String, required: true, unique: true },
-  passwordHash: { type: String, default: "" },
+  passwordHash: { type: String, required: true },
+  initialPassword: { type: String },
+  firstLogin: { type: Boolean, default: false },
   name: { type: String, required: true },
   role: { type: String, enum: ["owner", "admin", "manager", "user"], default: "user" },
   companyAdminOf: { type: Schema.Types.ObjectId, ref: "Company" },
