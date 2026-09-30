@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ResetPasswordForm from "../../components/ResetPasswordForm";
 
 type CustomerInfo = { customerId: string; name: string; phone: string; total: number };
 type EventItem = {
@@ -74,6 +75,8 @@ export default function CustomersClient() {
         </form>
         {error && <p className="error" style={{ marginTop: 12, marginBottom: 0 }}>{error}</p>}
       </div>
+
+      <ResetPasswordForm />
 
       {customer && (
         <>
