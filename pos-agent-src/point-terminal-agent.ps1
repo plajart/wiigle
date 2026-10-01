@@ -318,7 +318,8 @@ function Champ-Query($sql) {
         $rs.MoveNext()
     }
     $rs.Close()
-    return $rows
+    # 쉼표(,)로 감싸 반환 — PowerShell은 1건짜리 배열을 단일 객체로 풀어버려 .Count 가 비는 함정이 있다.
+    return ,$rows
 }
 function Sql-Str($s) { return "'" + ($s -replace "'", "''") + "'" }
 
@@ -337,6 +338,7 @@ $BulkImportMarkerPath = "$PSScriptRoot\bulk-import-done.json"
 # 대신 옮기기 "전"에 원본 그대로를 파일로 백업해둔다 — 전화번호 매칭 여부와 무관하게 전원
 # 포함. 문제가 생기면 이 파일로 포스DB를 수동 원복할 수 있다(restore-bulk-import-backup.ps1).
 function Export-PointBackupCsv($members, [string]$label) {
+    $members = @($members)
     if ($members.Count -eq 0) { return $null }
     $desktop = [Environment]::GetFolderPath('Desktop')
     $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
@@ -375,18 +377,17 @@ function Invoke-InitialBulkImport {
 
     # 전화번호 없는 회원 — 서버로 옮길 방법이 아직 없음(카드번호 기반 추후 병합은 별도 과제).
     # 그래도 포스DB에 그대로 두면 다음에 또 걸려 혼선만 생기므로, 위에서 이미 백업했으니
-    # 영점화한다. 복구가 필요하면 반드시 백업 파일로 수동 처리.
-    foreach ($m in $noPhoneMembers) {
-        Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $m.MEM_NO)"
-    }
+    # 영점화한다(복구가 필요하면 반드시 백업 파일로 수동 처리). 단, 서버 이전이 전부 성공한 뒤에 한다(아래).
 
     $imported = 0; $alreadyLinked = 0; $skipped = 0; $totalAmount = 0; $failed = 0
     $batchSize = 200
     for ($i = 0; $i -lt $withPhone.Count; $i += $batchSize) {
-        $batch = $withPhone[$i..([Math]::Min($i + $batchSize - 1, $withPhone.Count - 1))]
+        $batch = @($withPhone[$i..([Math]::Min($i + $batchSize - 1, $withPhone.Count - 1))])
         try {
-            $entries = $batch | ForEach-Object { @{ phone = $_.phone; cardNo = $_.cardNo; balance = $_.balance } }
-            $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json" -Body (@{ entries = $entries } | ConvertTo-Json -Depth 4)
+            # JSON을 직접 조립한다 — ConvertTo-Json은 1건짜리 배열을 객체로 직렬화해 서버가 400(ENTRIES_REQUIRED)을 돌려줬다.
+            $items = @($batch | ForEach-Object { @{ phone = $_.phone; cardNo = $_.cardNo; balance = $_.balance } | ConvertTo-Json -Compress })
+            $json = '{"entries":[' + ($items -join ',') + ']}'
+            $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
             $imported += $res.imported; $alreadyLinked += $res.alreadyLinked; $skipped += $res.skippedInvalidPhone; $totalAmount += $res.totalAmount
             # 서버 반영이 확인된 배치만 로컬을 0으로 — 백업은 이미 떠둔 상태라 안전.
             foreach ($e in $batch) {
@@ -394,7 +395,15 @@ function Invoke-InitialBulkImport {
             }
         } catch {
             Write-Host "일괄 이전 중 오류(이 배치는 로컬 값을 그대로 두고 다음 실행 때 재시도합니다): $_" -ForegroundColor Red
+            Set-AgentError "초기 이전 실패: $(Get-FriendlyError $_)"
             $failed++
+        }
+    }
+
+    # 전화번호가 없어 서버로 못 옮긴 회원은 서버 이전이 전부 끝난 뒤에만(백업은 이미 저장됨) 영점화한다.
+    if ($failed -eq 0) {
+        foreach ($m in $noPhoneMembers) {
+            Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $m.MEM_NO)"
         }
     }
 
@@ -431,9 +440,22 @@ function Set-ManageShortcut([bool]$isPrimary, [string]$storeUrl) {
 
 $Script:IsPrimary = [bool]$cfg.isPrimary
 
+# 최근 오류를 서버(매장 관리모드 "포스기 다운로드" 화면)에 알린다 — 하트비트에 실어 보낸다.
+$Script:LastError = $null
+$Script:LastErrorAt = $null
+$Script:SkippedNoPhone = 0
+function Set-AgentError([string]$msg) {
+    $Script:LastError = $msg
+    $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
+    try { Send-Heartbeat | Out-Null } catch { }
+}
+
 function Send-Heartbeat {
     try {
-        $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader
+        $pending = 0
+        try { $pending = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+        $status = @{ pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $Script:LastError; lastErrorAt = $Script:LastErrorAt }
+        $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes(($status | ConvertTo-Json -Compress)))
         $Script:IsPrimary = [bool]$res.isPrimary
         if ($res.storeUrl) { Set-ManageShortcut -isPrimary $Script:IsPrimary -storeUrl $res.storeUrl }
         return $true
@@ -569,7 +591,13 @@ function Process-Queue {
                     } | ConvertTo-Json) | Out-Null
                 }
             } else {
-                Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 전화번호 미등록 — 적립 건너뜀"
+                Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 전화번호 미등록 — 적립 건너뜀(보관)"
+                # 'Y'가 아니라 'S'(전화번호 없어 건너뜀)로 남겨 나중에 번호가 등록되면 사후 처리할 수 있게 한다.
+                $Script:SkippedNoPhone++
+                Set-AgentError "전화번호가 없는 회원($memNo)의 적립을 서버에 반영하지 못했습니다(보관됨)."
+                Restore-SwappedIfDone $memNo
+                Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='S' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
+                continue
             }
 
             Restore-SwappedIfDone $memNo
@@ -582,12 +610,14 @@ function Process-Queue {
                 # 서버가 "이 데이터는 처리할 수 없다"고 확정한 경우(잘못된 값) — 계속 재시도하면 같은 오류만 반복되므로 건너뛴다.
                 # 포스 잔액은 건드리지 않는다(서버에 반영되지 않은 건이므로 그대로 둔다).
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 항목 건너뜀(서버가 거부, CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Yellow
+                Set-AgentError "적립·사용 1건을 서버가 거부해 건너뜀(CRAB_SEQ=$($r.CRAB_SEQ)): $(Get-FriendlyError $qerr)"
                 try {
                     Restore-SwappedIfDone $memNo
                     Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
                 } catch { }
             } else {
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 처리 실패(CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Red
+                $Script:LastError = "큐 처리 실패(재시도 중): $(Get-FriendlyError $qerr)"; $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
                 # 일시적인 실패(인터넷 끊김 등)는 PROCESSED='Y'로 안 바꿔서 다음 순회에 재시도(멱등키가 있어 서버 쪽 중복 반영은 안 됨)
             }
         }

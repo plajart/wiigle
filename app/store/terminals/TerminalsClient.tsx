@@ -10,6 +10,7 @@ type Terminal = {
   lastSeenAt: string | null;
   online: boolean;
   isPrimary: boolean;
+  agentStatus?: { pending: number; skippedNoPhone: number; lastError?: string | null; lastErrorAt?: string | null } | null;
 };
 
 type Activity = { _id: string; type: string; isEarn: boolean; amount: number; occurredAt: string; cardNo: string | null };
@@ -117,6 +118,13 @@ export default function TerminalsClient({ storeId }: { storeId: string }) {
                     등록 {new Date(t.registeredAt).toLocaleDateString("ko-KR")} ·{" "}
                     {t.lastSeenAt ? `최근 응답 ${new Date(t.lastSeenAt).toLocaleTimeString("ko-KR")}` : "응답 기록 없음"}
                   </div>
+                  {t.agentStatus && (t.agentStatus.pending > 0 || t.agentStatus.skippedNoPhone > 0 || t.agentStatus.lastError) && (
+                    <div className="error" style={{ marginTop: 4 }}>
+                      {t.agentStatus.pending > 0 && <>서버에 아직 못 보낸 적립·사용 {t.agentStatus.pending}건 · </>}
+                      {t.agentStatus.skippedNoPhone > 0 && <>전화번호가 없어 보류된 {t.agentStatus.skippedNoPhone}건 · </>}
+                      {t.agentStatus.lastError && <>최근 오류: {t.agentStatus.lastError}{t.agentStatus.lastErrorAt ? ` (${new Date(t.agentStatus.lastErrorAt).toLocaleString("ko-KR")})` : ""}</>}
+                    </div>
+                  )}
                 </span>
                 <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span className={"badge " + (t.online ? "success" : "neutral")}>{t.online ? "가동중" : "오프라인"}</span>

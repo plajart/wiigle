@@ -15,7 +15,9 @@ export async function POST(req: Request) {
     const { storeId, terminalId } = await requireAgentTerminal(req);
 
     const body = await req.json();
-    const entries: BulkImportEntry[] = Array.isArray(body.entries) ? body.entries : [];
+    // 1건짜리 배열이 단일 객체로 직렬화돼 오는 경우(PowerShell 5.1)도 받아준다.
+    const raw = body?.entries;
+    const entries: BulkImportEntry[] = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
     if (entries.length === 0) return NextResponse.json({ error: "ENTRIES_REQUIRED" }, { status: 400 });
     if (entries.length > MAX_ENTRIES_PER_CALL) {
       return NextResponse.json({ error: "TOO_MANY_ENTRIES_PER_CALL", max: MAX_ENTRIES_PER_CALL }, { status: 400 });

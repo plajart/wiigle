@@ -17,6 +17,20 @@ export async function POST(req: Request) {
     if (terminal.status !== "ACTIVE") return NextResponse.json({ error: "TERMINAL_REVOKED" }, { status: 403 });
 
     terminal.lastSeenAt = new Date();
+    // 진단 정보(선택) — 본문이 없거나 깨져 있어도 하트비트 자체는 항상 성공시킨다.
+    const body = await req.json().catch(() => null);
+    if (body && typeof body === "object") {
+      const n = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.floor(Number(v)) : 0);
+      const lastErrorAt = body.lastErrorAt ? new Date(String(body.lastErrorAt)) : null;
+      terminal.agentStatus = {
+        pending: n(body.pending),
+        skippedNoPhone: n(body.skippedNoPhone),
+        lastError: body.lastError ? String(body.lastError).slice(0, 300) : null,
+        lastErrorAt: lastErrorAt && !isNaN(lastErrorAt.getTime()) ? lastErrorAt : null,
+        reportedAt: new Date(),
+      };
+      terminal.markModified("agentStatus");
+    }
     await terminal.save();
 
     // isPrimary를 하트비트 응답에 실어보내 에이전트가 매번 최신 상태로 관리모드

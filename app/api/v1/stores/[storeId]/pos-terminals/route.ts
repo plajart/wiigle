@@ -22,6 +22,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ storeId
       registeredAt: t.registeredAt,
       lastSeenAt: t.lastSeenAt ?? null,
       isPrimary: t.isPrimary === true,
+      agentStatus: t.agentStatus ?? null,
       online: t.status === "ACTIVE" && !!t.lastSeenAt && now - new Date(t.lastSeenAt).getTime() < ONLINE_WINDOW_MS,
     }));
 
