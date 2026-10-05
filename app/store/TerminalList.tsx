@@ -11,6 +11,8 @@ type Terminal = {
   lastSeenAt: string | null;
   online: boolean;
   isPrimary: boolean;
+  initialTransferAt?: string | null;
+  agentVersion?: string | null;
   agentStatus?: { pending: number; skippedNoPhone: number; lastError?: string | null; lastErrorAt?: string | null } | null;
 };
 
@@ -167,6 +169,9 @@ export default function TerminalList({ storeId, role }: { storeId: string; role:
               <div className="faint" style={{ marginTop: 4 }}>
                 등록 {new Date(t.registeredAt).toLocaleDateString("ko-KR")} ·{" "}
                 {t.lastSeenAt ? `최근 응답 ${new Date(t.lastSeenAt).toLocaleTimeString("ko-KR")}` : "응답 기록 없음"}
+                {" · "}
+                {t.initialTransferAt ? `최초 포인트 이전 완료 ${new Date(t.initialTransferAt).toLocaleDateString("ko-KR")}` : "최초 포인트 이전 전"}
+                {t.agentVersion ? ` · 프로그램 ${t.agentVersion}` : ""}
               </div>
               {t.agentStatus && (t.agentStatus.pending > 0 || t.agentStatus.skippedNoPhone > 0 || t.agentStatus.lastError) && (
                 <div className="error" style={{ marginTop: 4 }}>

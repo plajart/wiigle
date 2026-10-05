@@ -32,7 +32,8 @@ param(
     [int]$QueuePollSec = 3,
     [int]$SwapTimeoutSec = 180,  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
     [switch]$Setup,    # start.bat이 지정 — 설치·등록·자동시작 확인 후 본체를 숨김 실행하고 종료
-    [switch]$ShowList  # 방금 설치·등록한 직후 이 매장의 포스기 목록을 한 번 보여준다
+    [switch]$ShowList,  # 방금 설치·등록한 직후 이 매장의 포스기 목록을 한 번 보여준다
+    [switch]$InstallRun # 설치/실행 파일(start.bat·exe)로 시작한 실행 — 최초 포인트 서버 이전을 확인한다(윈도우 부팅 자동실행에서는 하지 않는다)
 )
 
 $ErrorActionPreference = "Stop"
@@ -224,6 +225,24 @@ function Ensure-AutoStart {
     }
 }
 
+function Set-ManageShortcut([bool]$isPrimary, [string]$storeUrl) {
+    # 바탕화면 "포인트 관리 프로그램" 바로가기 — 모든 포스기에 만든다(설치 때 한 번, 이후 하트비트가 없어졌거나 주소가 바뀌었으면 다시 만든다).
+    # 클릭하면 기본 브라우저로 매장 관리모드(웹과 동일 화면)가 열린다. 인터넷 바로가기(.url)라 브라우저 경로에 상관없이 동작한다.
+    try {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $oldLnk = "$desktop\포인트 관리모드.lnk"   # 예전 버전(대표 포스기 전용)이 만든 바로가기는 새 것으로 교체한다
+        if (Test-Path $oldLnk) { Remove-Item $oldLnk -Force -ErrorAction SilentlyContinue }
+        if (-not $storeUrl) { return }
+        $path = "$desktop\포인트 관리 프로그램.url"
+        $lines = @("[InternetShortcut]", "URL=$storeUrl")
+        if (Test-Path "$PSScriptRoot\pointmanager.ico") { $lines += "IconFile=$PSScriptRoot\pointmanager.ico"; $lines += "IconIndex=0" }
+        $content = ($lines -join "`r`n") + "`r`n"
+        $current = $null
+        if (Test-Path $path) { try { $current = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Default) } catch { } }
+        if ($current -ne $content) { [System.IO.File]::WriteAllText($path, $content, [System.Text.Encoding]::Default) }
+    } catch { Write-Host "바탕화면 바로가기 생성 실패(무시): $_" -ForegroundColor Yellow }
+}
+
 # ─── 설치·실행 단계(start.bat이 -Setup으로 실행) ──────────────────────────────────
 # 여러 번 실행해도 안전하다: 이미 실행 중이면 새로 띄우지 않고, 이미 등록된 PC면 다시 등록하지 않는다.
 function Invoke-Setup {
@@ -248,6 +267,7 @@ function Invoke-Setup {
     }
 
     Ensure-AutoStart
+    try { $cs = Load-Config; if ($cs) { Set-ManageShortcut $false "$($cs.baseUrl)/store" } } catch { }  # 설치하면 바탕화면에 "포인트 관리 프로그램" 바로가기를 만든다
 
     if ($running) {
         Write-Host "프로그램이 이미 실행 중입니다. 다시 실행하지 않습니다 — 화면 오른쪽 아래 트레이의 '포인트 관리' 아이콘을 확인하세요." -ForegroundColor Green
@@ -256,6 +276,7 @@ function Invoke-Setup {
 
     $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$PSCommandPath`"")
     if ($firstTime) { $argList += "-ShowList" }
+    $argList += "-InstallRun"
     Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Hidden
     Write-Host "포인트 관리 프로그램을 실행했습니다. 이 창은 닫아도 프로그램은 계속 실행됩니다." -ForegroundColor Green
     if ($firstTime) { Write-Host "(처음 설치라면 기존 회원 포인트 이전에 시간이 걸릴 수 있습니다. 진행 기록: agent.log)" }
@@ -372,19 +393,22 @@ function Export-PointBackupCsv($members, [string]$label) {
 # - 같은 요청이 다시 가도 서버가 한 번만 반영한다(묶음 번호+전화번호+금액이 같으면 중복 무시).
 $TransferBatchPath = "$PSScriptRoot\transfer-pending-batch.txt"
 
-function Invoke-PointTransfer([bool]$interactive) {
+function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
+    # $auto: 설치 직후 자동 실행 — 성공은 짧은 알림만, 문제(인터넷 없음 등)는 창으로 알린다.
     $say = {
         param($text, $icon)
         Write-Host $text
-        if ($interactive) { [System.Windows.Forms.MessageBox]::Show($text, "포인트 서버 이전", [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null }
+        if ($interactive -or ($auto -and $icon -eq [System.Windows.Forms.MessageBoxIcon]::Warning)) { [System.Windows.Forms.MessageBox]::Show($text, "포인트 서버 이전", [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null }
     }
     $info = [System.Windows.Forms.MessageBoxIcon]::Information
     $warn = [System.Windows.Forms.MessageBoxIcon]::Warning
 
     # 1) 인터넷(서버) 연결 확인 — 연결돼 있지 않으면 시작하지 않는다.
-    try { Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos/agent/terminals" -Headers $AuthHeader -TimeoutSec 10 | Out-Null }
+    $initialDone = $false
+    try { $chk = Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos/agent/terminals" -Headers $AuthHeader -TimeoutSec 10; $initialDone = [bool]$chk.initialTransferDone }
     catch { & $say "서버에 연결할 수 없어 포인트를 이전하지 않았습니다.`n인터넷 연결을 확인한 뒤 다시 실행해주세요.`n`n($(Get-FriendlyError $_))" $warn; return }
 
+    if ($initialDone) { "ok" | Out-File -Encoding ASCII "$PSScriptRoot\initial-transfer-done.txt" }  # 서버에 최초 이전 기록이 이미 있으면 로컬에도 표시
     # 2) 서버에 아직 못 보낸 결제부터 처리 — 남아 있으면 중단(그 적립분이 포스 잔액에 섞여 있어 지금 옮기면 이중 반영된다).
     if ($Script:SwapPending.Count -gt 0) { & $say "지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 실행해주세요." $warn; return }
     try { Process-Queue } catch { Write-Host "큐 처리 오류: $_" -ForegroundColor Red }
@@ -394,10 +418,15 @@ function Invoke-PointTransfer([bool]$interactive) {
 
     Write-Host "=== 포인트 서버 이전을 시작합니다 ===" -ForegroundColor Cyan
     $members = Champ-Query "SELECT MEM_NO, MEM_NM, MEM_TEL_1, MEM_REP_TEL, MEM_CARD_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_USABLE_PNT > 0"
-    if ($members.Count -eq 0) { & $say "이전할 포인트가 없습니다(모든 회원의 포스 잔액이 0입니다)." $info; return }
+    if ($members.Count -eq 0) {
+        if (-not $initialDone) { Send-TransferLog "INITIAL_DONE" "" 0 $null $null "최초 포인트 서버 이전: 이전할 포인트 없음" ""; "ok" | Out-File -Encoding ASCII "$PSScriptRoot\initial-transfer-done.txt" }
+        & $say "이전할 포인트가 없습니다(모든 회원의 포스 잔액이 0입니다)." $info
+        return
+    }
 
-    # 옮기기 전에 원본을 파일로 백업(문제가 생기면 restore.bat 으로 되돌릴 수 있다).
-    Export-PointBackupCsv $members "transfer" | Out-Null
+    # 옮기기 전에 원본을 파일로 백업 — 목적은 "프로그램을 처음 설치하는 시점에 이미 있던 포인트"를 기록해 두는 것이므로,
+    # 서버에 이 포스기의 최초 이전 기록이 없을 때(첫 이전)만 만든다. 이후 이전에는 백업하지 않는다.
+    if (-not $initialDone) { Export-PointBackupCsv $members "initial" | Out-Null }
 
     $withPhone = @()
     $noPhoneMembers = @()
@@ -444,6 +473,10 @@ function Invoke-PointTransfer([bool]$interactive) {
             Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $m.MEM_NO)"
         }
         Remove-Item $TransferBatchPath -Force -ErrorAction SilentlyContinue
+        if (-not $initialDone) {
+            Send-TransferLog "INITIAL_DONE" "" $totalAmount $null $null "최초 포인트 서버 이전 완료(회원 $imported 명, 합계 $totalAmount)" ""
+            "ok" | Out-File -Encoding ASCII "$PSScriptRoot\initial-transfer-done.txt"
+        }
     }
     $summary = @{ ranAt = (Get-Date).ToString("o"); memberCount = $members.Count; withPhone = $withPhone.Count; noPhone = $noPhoneMembers.Count; imported = $imported; alreadyApplied = $already; skippedInvalidPhone = $skipped; totalAmount = $totalAmount; failedBatches = $failed }
     $summary | ConvertTo-Json | Out-File -Encoding UTF8 "$PSScriptRoot\transfer-last.json"
@@ -455,24 +488,6 @@ function Invoke-PointTransfer([bool]$interactive) {
 
 # ─── 대표 포스기 바탕화면 바로가기 ────────────────────────────────────────────
 
-function Set-ManageShortcut([bool]$isPrimary, [string]$storeUrl) {
-    $shortcutPath = "$([Environment]::GetFolderPath('Desktop'))\포인트 관리모드.lnk"
-    if ($isPrimary) {
-        if (-not (Test-Path $shortcutPath)) {
-            $ws = New-Object -ComObject WScript.Shell
-            $lnk = $ws.CreateShortcut($shortcutPath)
-            $lnk.TargetPath = (Get-Command "$env:ProgramFiles\Internet Explorer\iexplore.exe" -ErrorAction SilentlyContinue).Path
-            if (-not $lnk.TargetPath) { $lnk.TargetPath = $storeUrl } # 브라우저 경로를 못 찾으면 URL만 지정(OS가 기본 브라우저로 열어줌)
-            if ($lnk.TargetPath -ne $storeUrl) { $lnk.Arguments = $storeUrl }
-            if (Test-Path "$PSScriptRoot\pointmanager.ico") { $lnk.IconLocation = "$PSScriptRoot\pointmanager.ico" }
-            $lnk.Description = "포인트 관리 프로그램 — 매장 관리모드(웹과 동일 화면)"
-            $lnk.Save()
-        }
-    } elseif (Test-Path $shortcutPath) {
-        Remove-Item $shortcutPath -Force
-    }
-}
-
 # ─── 하트비트 ────────────────────────────────────────────────────────────────
 
 $Script:IsPrimary = [bool]$cfg.isPrimary
@@ -483,6 +498,9 @@ $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
 $Script:RetryError = $null
 $Script:ServerAgentVersion = $null
+$Script:StoreUrl = $null
+$Script:UpdateReport = $null      # 서버가 지시한 업데이트의 결과(BUSY/FAILED)를 다음 하트비트로 알린다
+$Script:UpdateInProgress = $false
 
 # 트레이 아이콘 툴팁과 메뉴 맨 위 줄에 "이 포스기의 이름·소속 매장"을 보여준다(이름은 서버 값이 기준).
 function Update-IdentityDisplay {
@@ -503,7 +521,10 @@ function Send-Heartbeat {
     try {
         $pending = 0
         try { $pending = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
-        $status = @{ pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt }
+        $localVer = $null
+        try { $localVer = Get-LocalAgentVersion } catch { }
+        $report = $Script:UpdateReport; $Script:UpdateReport = $null
+        $status = @{ agentVersion = $localVer; caps = @("update"); updateStatus = $(if ($report) { $report.status } else { $null }); updateError = $(if ($report) { $report.error } else { $null }); pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt }
         $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes(($status | ConvertTo-Json -Compress)))
         $Script:IsPrimary = [bool]$res.isPrimary
         if ($res.storeName -and ($res.storeName -ne $cfg.storeName -or $res.companyName -ne $cfg.companyName)) {
@@ -513,12 +534,15 @@ function Send-Heartbeat {
             try { Show-ResultToast "이 포스기가 이동되었습니다`n$($res.companyName) › $($res.storeName)" } catch { }
         }
         if ($res.agentVersion) { $Script:ServerAgentVersion = [string]$res.agentVersion; try { Update-UpdateMenuText } catch { } }
+        # 본사가 시작한 전체 순차 업데이트에서 내 차례가 왔다 — 확인창 없이 업데이트한다(결제 중이면 미뤘다고 알린다).
+        if ($res.updateNow -eq $true -and -not $Script:UpdateInProgress) { try { Invoke-AgentUpdate -Auto } catch { Write-Host "자동 업데이트 오류: $_" -ForegroundColor Red } }
         if ($res.terminalName -and $res.terminalName -ne $cfg.name) {
             # 매장 관리모드에서 포스기 이름을 바꿨다 — 화면 표시를 바꾸고 설정 파일에도 저장해 다음 시작 때도 같은 이름을 쓴다.
             $cfg.name = $res.terminalName
             try { Save-Config $cfg } catch { }
         }
         try { Update-IdentityDisplay } catch { }
+        if ($res.storeUrl) { $Script:StoreUrl = [string]$res.storeUrl }
         if ($res.storeUrl) { Set-ManageShortcut -isPrimary $Script:IsPrimary -storeUrl $res.storeUrl }
         return $true
     } catch {
@@ -764,16 +788,30 @@ function Update-UpdateMenuText {
     if ($latest -and $local -ne $latest) { $itemUpdate.Text = "업데이트 (새 버전 있음)..." } else { $itemUpdate.Text = "업데이트 확인..." }
 }
 
-function Invoke-AgentUpdate {
+function Invoke-AgentUpdate([switch]$Auto) {
     $info = [System.Windows.Forms.MessageBoxIcon]::Information
     $warn = [System.Windows.Forms.MessageBoxIcon]::Warning
+    # 자동(본사가 시작한 순차 업데이트)에는 확인창을 띄우지 않는다. 결제·사용 조회 중이거나 서버에 못 보낸 결제가 있으면 미루고(BUSY) 나중에 다시 순서가 온다.
+    if ($Auto) {
+        $pendingQ = 0
+        try { $pendingQ = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+        if ($Script:SwapPending.Count -gt 0 -or $pendingQ -gt 0) { $Script:UpdateReport = @{ status = "BUSY"; error = $null }; return }
+        $Script:UpdateInProgress = $true
+    }
     try { $v = Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos-agent/version" -TimeoutSec 15 }
-    catch { [System.Windows.Forms.MessageBox]::Show("서버에 연결할 수 없어 업데이트를 확인하지 못했습니다.`n인터넷 연결을 확인해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
+    catch {
+        if ($Auto) { $Script:UpdateReport = @{ status = "FAILED"; error = "서버에 연결할 수 없음" }; $Script:UpdateInProgress = $false; return }
+        [System.Windows.Forms.MessageBox]::Show("서버에 연결할 수 없어 업데이트를 확인하지 못했습니다.`n인터넷 연결을 확인해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
     $local = Get-LocalAgentVersion
-    if ($local -eq $v.version) { [System.Windows.Forms.MessageBox]::Show("이미 최신 버전입니다.", "업데이트", "OK", $info) | Out-Null; return }
-    $ans = [System.Windows.Forms.MessageBox]::Show("새 버전이 있습니다. 지금 업데이트할까요?`n(업데이트하는 동안 프로그램이 잠깐 다시 시작됩니다. 결제 중이 아닐 때 진행해주세요.)", "업데이트", "YesNo", $info)
-    if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    if ($Script:SwapPending.Count -gt 0) { [System.Windows.Forms.MessageBox]::Show("지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 시도해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
+    if ($local -eq $v.version) {
+        if (-not $Auto) { [System.Windows.Forms.MessageBox]::Show("이미 최신 버전입니다.", "업데이트", "OK", $info) | Out-Null } else { $Script:UpdateInProgress = $false }
+        return
+    }
+    if (-not $Auto) {
+        $ans = [System.Windows.Forms.MessageBox]::Show("새 버전이 있습니다. 지금 업데이트할까요?`n(업데이트하는 동안 프로그램이 잠깐 다시 시작됩니다. 결제 중이 아닐 때 진행해주세요.)", "업데이트", "YesNo", $info)
+        if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        if ($Script:SwapPending.Count -gt 0) { [System.Windows.Forms.MessageBox]::Show("지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 시도해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
+    }
     $tmpZip = Join-Path $env:TEMP "pm-agent-update.zip"
     $tmpDir = Join-Path $env:TEMP "pm-agent-update"
     try {
@@ -788,6 +826,7 @@ function Invoke-AgentUpdate {
         Get-ChildItem $tmpDir -File | ForEach-Object { Copy-Item $_.FullName (Join-Path $PSScriptRoot $_.Name) -Force }
         $v.version | Out-File -Encoding ASCII $BundleVersionPath
     } catch {
+        if ($Auto) { $Script:UpdateReport = @{ status = "FAILED"; error = "$_" }; $Script:UpdateInProgress = $false; Write-Host "자동 업데이트 실패: $_" -ForegroundColor Red; return }
         [System.Windows.Forms.MessageBox]::Show("업데이트하지 못했습니다(기존 프로그램은 그대로 둡니다).`n$_", "업데이트", "OK", $warn) | Out-Null
         return
     }
@@ -809,6 +848,11 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $itemIdentity = $menu.Items.Add("$($cfg.name)")
 $itemIdentity.Enabled = $false
 $menu.Items.Add("-") | Out-Null
+$itemManage = $menu.Items.Add("관리프로그램 실행하기")
+$itemManage.Add_Click({
+    try { Start-Process ($(if ($Script:StoreUrl) { $Script:StoreUrl } else { "$($cfg.baseUrl)/store" })) }
+    catch { [System.Windows.Forms.MessageBox]::Show("관리프로그램(웹)을 열지 못했습니다.`n브라우저에서 $($cfg.baseUrl)/store 로 접속해주세요.", "포인트 관리 프로그램", "OK", "Warning") | Out-Null }
+})
 $itemRedeem = $menu.Items.Add("포인트 사용...")
 $itemRedeem.Add_Click({ Show-RedeemPopup })
 $itemList = $menu.Items.Add("포스기 목록...")
@@ -846,11 +890,19 @@ if ($ShowList) {
     $Script:ListOnceTimer.Add_Tick({
         $Script:ListOnceTimer.Stop()
         Show-TerminalList
-        # 설치 직후 한 번 — 기존 회원 포인트를 지금 서버로 옮길지 묻는다(나중에 트레이 메뉴 '포인트 서버로 이전'으로도 할 수 있다).
-        $a = [System.Windows.Forms.MessageBox]::Show("설치가 끝났습니다.`n이 포스기에 남아 있는 기존 회원 포인트를 지금 서버로 옮길까요?`n(나중에 트레이 메뉴의 '포인트 서버로 이전'으로도 할 수 있습니다.)", "포인트 관리 프로그램", "YesNo", "Question")
-        if ($a -eq [System.Windows.Forms.DialogResult]::Yes) { try { Invoke-PointTransfer $true } catch { [System.Windows.Forms.MessageBox]::Show("포인트 이전 중 오류가 났습니다.`n$_", "포인트 서버로 이전", "OK", "Warning") | Out-Null } }
     })
     $Script:ListOnceTimer.Start()
+}
+
+# 설치/실행 파일로 시작한 경우에만(윈도우 부팅 자동실행은 제외) 최초 포인트 서버 이전을 한 번 실행한다 — 인터넷이 연결돼 있을 때.
+# 이미 끝났으면(로컬 표시 파일) 건너뛴다. 인터넷이 없으면 안내만 하고, 이후 트레이 메뉴 '포인트 서버로 이전'으로 하면 된다.
+if ($InstallRun -and -not (Test-Path "$PSScriptRoot\initial-transfer-done.txt")) {
+    $Script:InitTimer = New-Object System.Windows.Forms.Timer; $Script:InitTimer.Interval = 4000
+    $Script:InitTimer.Add_Tick({
+        $Script:InitTimer.Stop()
+        try { Invoke-PointTransfer $false $true } catch { Write-Host "최초 포인트 이전 중 오류: $_" -ForegroundColor Red }
+    })
+    $Script:InitTimer.Start()
 }
 
 [System.Windows.Forms.Application]::Run()

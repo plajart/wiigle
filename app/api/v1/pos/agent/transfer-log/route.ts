@@ -4,12 +4,13 @@ import User from "@/lib/models/User";
 import { logPosTransfer } from "@/lib/points";
 import { normalizePhone } from "@/lib/password";
 import { publishPointChange } from "@/lib/realtime";
+import PosTerminal from "@/lib/models/PosTerminal";
 import { handleApiError, requireAgentTerminal } from "@/lib/api-utils";
 
 // 포스 프로그램이 로컬(포스DB)에서 일어난 포인트 이동·건너뜀을 서버 장부에 남긴다 — 서버가 직접 볼 수 없는 부분
 // (사용 조회 때 서버 포인트를 포스에 더함, 결제 후 포스 잔액 0으로 복원, 번호 없어 보류, 서버 거부로 건너뜀).
 // 잔액을 바꾸지 않는 기록 전용이다.
-const KINDS = new Set(["LOOKUP_TO_POS", "RESTORE_POS", "SKIPPED", "REJECTED"]);
+const KINDS = new Set(["LOOKUP_TO_POS", "RESTORE_POS", "SKIPPED", "REJECTED", "INITIAL_DONE"]);
 
 export async function POST(req: Request) {
   try {
@@ -21,12 +22,17 @@ export async function POST(req: Request) {
     const phone = normalizePhone(String(body.phone ?? ""));
     const user = phone ? await User.findOne({ phone: { $in: [phone, String(body.phone)] } }).select("_id").lean() : null;
     const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+    // 최초 포인트 서버 이전이 끝났다는 표시 — 이후 이전 때는 백업 파일을 만들지 않고, 대시보드에 완료로 보인다(처음 한 번만 기록).
+    if (kind === "INITIAL_DONE") {
+      const r = await PosTerminal.updateOne({ _id: terminalId, initialTransferAt: { $exists: false } }, { $set: { initialTransferAt: new Date() } });
+      if (r.modifiedCount === 0) return NextResponse.json({ ok: true, alreadyDone: true });
+    }
     await logPosTransfer({
       storeId,
       terminalId,
       userId: user ? String(user._id) : undefined,
       phone: phone || undefined,
-      kind: kind as "LOOKUP_TO_POS" | "RESTORE_POS" | "SKIPPED" | "REJECTED",
+      kind: kind as "LOOKUP_TO_POS" | "RESTORE_POS" | "SKIPPED" | "REJECTED" | "INITIAL_DONE",
       direction: kind === "LOOKUP_TO_POS" ? "SERVER_TO_POS" : kind === "RESTORE_POS" ? "POS_TO_SERVER" : "NONE",
       amount: n(body.amount) ?? 0,
       localBefore: n(body.localBefore),

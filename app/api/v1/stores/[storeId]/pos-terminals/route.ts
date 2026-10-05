@@ -23,6 +23,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ storeId
       lastSeenAt: t.lastSeenAt ?? null,
       isPrimary: t.isPrimary === true,
       agentStatus: t.agentStatus ?? null,
+      initialTransferAt: t.initialTransferAt ?? null,
+      agentVersion: t.agentVersion ?? null,
       online: t.status === "ACTIVE" && !!t.lastSeenAt && now - new Date(t.lastSeenAt).getTime() < ONLINE_WINDOW_MS,
     }));
 

@@ -39,7 +39,7 @@ const EV_LABEL: Record<string, string> = {
 const EV_NEG = new Set(["VENDOR_USE", "REDEEM", "TRANSFER_OUT", "EARN_CANCEL"]);
 const TR_LABEL: Record<string, string> = {
   LOOKUP_TO_POS: "서버→포스 (사용 조회)", RESTORE_POS: "포스 잔액 복원(0)", EARN_TO_SERVER: "포스→서버 (적립 이전)", USE_TO_SERVER: "포스→서버 (사용 반영)",
-  EARN_CANCEL: "적립 취소 반영", USE_CANCEL: "사용 취소 반영", BULK_IMPORT: "초기 일괄 이전", SKIPPED: "보류(건너뜀)", REJECTED: "서버 거부(건너뜀)",
+  EARN_CANCEL: "적립 취소 반영", INITIAL_DONE: "최초 포인트 이전 완료", USE_CANCEL: "사용 취소 반영", BULK_IMPORT: "초기 일괄 이전", SKIPPED: "보류(건너뜀)", REJECTED: "서버 거부(건너뜀)",
 };
 
 const fmt = (s: string) => new Date(s).toLocaleString("ko-KR");

@@ -10,6 +10,7 @@ export type PosTransferKind =
   | "EARN_CANCEL" // 결제 취소로 적립 취소
   | "USE_CANCEL" // 결제 취소로 사용 취소(환원)
   | "BULK_IMPORT" // 포스기 초기 설치 시 기존 포인트 일괄 이전
+  | "INITIAL_DONE" // 최초 포인트 서버 이전 완료 표시(서버 기록)
   | "SKIPPED" // 전화번호 없음 등으로 서버 반영을 건너뜀(보류)
   | "REJECTED"; // 서버가 거부해 건너뜀
 

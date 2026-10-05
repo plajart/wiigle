@@ -10,11 +10,12 @@ const ONLINE_WINDOW_MS = 2 * 60 * 1000; // 2분 이내 하트비트면 "가동�
 export async function GET(req: Request) {
   try {
     await dbConnect();
-    const { storeId, terminalId } = await requireAgentTerminal(req);
+    const { storeId, terminalId, terminal: self } = await requireAgentTerminal(req);
 
     const terminals = await PosTerminal.find({ storeId, status: "ACTIVE" }).sort({ registeredAt: 1 }).lean();
     const now = Date.now();
     return NextResponse.json({
+      initialTransferDone: !!(self as { initialTransferAt?: Date } | undefined)?.initialTransferAt,
       terminals: terminals.map((t) => ({
         id: String(t._id),
         name: t.name,
