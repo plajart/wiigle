@@ -24,5 +24,9 @@ const PosTerminalSchema = new Schema<IPosTerminal>({
   agentStatus: { type: Schema.Types.Mixed },
 });
 
+// 같은 매장 안에서 사용 중(ACTIVE)인 포스기 이름은 겹치면 안 된다(POS001이 둘이 되는 일 방지). 해지된 포스기는 제외.
+// 동시에 두 대가 등록돼도 DB가 막고, 서버는 다음 번호로 다시 시도한다. 기존 중복은 migrate-to-multitenant.ts 7단계가 먼저 정리한다.
+PosTerminalSchema.index({ storeId: 1, name: 1 }, { unique: true, partialFilterExpression: { status: "ACTIVE" } });
+
 export default (models.PosTerminal as mongoose.Model<IPosTerminal>) ||
   model<IPosTerminal>("PosTerminal", PosTerminalSchema);

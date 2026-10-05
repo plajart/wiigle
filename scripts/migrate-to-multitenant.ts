@@ -128,6 +128,36 @@ async function main() {
   }
   console.log(`이름을 바꿀 포스 단말기: ${renamed}대`);
 
+  // 7. 같은 매장 안에서 이름이 겹치는 사용 중(ACTIVE) 포스기 정리 — 먼저 등록된 것은 그대로 두고 나머지는 새 번호를 받는다. 정리 후 중복 방지 유니크 인덱스를 만든다.
+  //    (앱도 시작할 때 같은 인덱스를 만들려 하지만 중복이 남아 있으면 실패하므로, 이 단계를 앱 시작 전에 실행한다.)
+  let deduped = 0;
+  for (const sid of storeIds) {
+    const all = await terminals.find({ storeId: sid }).sort({ registeredAt: 1, _id: 1 }).toArray();
+    let max = 0;
+    for (const t of all) {
+      const m = /^POS(\d{3,})$/.exec(String(t.name));
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    const seen = new Set<string>();
+    for (const t of all.filter((x) => x.status === "ACTIVE")) {
+      const key = String(t.name);
+      if (!seen.has(key)) {
+        seen.add(key);
+        continue;
+      }
+      max += 1;
+      const newName = `POS${String(max).padStart(3, "0")}`;
+      deduped++;
+      console.log(`이름 중복 정리: 매장 ${sid} 포스 단말기 ${t._id} '${t.name}' → '${newName}'`);
+      if (APPLY) await terminals.updateOne({ _id: t._id }, { $set: { name: newName } });
+    }
+  }
+  console.log(`이름이 겹쳐 새 번호를 받을 포스 단말기: ${deduped}대`);
+  if (APPLY) {
+    await terminals.createIndex({ storeId: 1, name: 1 }, { unique: true, partialFilterExpression: { status: "ACTIVE" } });
+    console.log("포스기 이름 중복 방지 인덱스 생성 완료");
+  }
+
   await mongoose.disconnect();
   console.log("완료");
 }

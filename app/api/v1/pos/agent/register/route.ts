@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { dbConnect } from "@/lib/mongodb";
 import PosProvisionToken, { hashProvisionToken } from "@/lib/models/PosProvisionToken";
 import PosTerminal from "@/lib/models/PosTerminal";
+import { nextTerminalName, isDuplicateKey } from "@/lib/pos-terminal-name";
 import Store from "@/lib/models/Store";
 import Company from "@/lib/models/Company";
 import { handleApiError, clientIp, rateLimit } from "@/lib/api-utils";
@@ -34,23 +35,27 @@ export async function POST(req: Request) {
     const isFirstTerminal = !hasPrimary;
 
     // 단말 이름은 등록 순서대로 POS001, POS002… 로 서버가 정한다(매장 관리모드 대시보드에서 바꿀 수 있다).
-    const existingNames = await PosTerminal.find({ storeId: provision.storeId }).select("name").lean();
-    let maxNo = 0;
-    for (const t of existingNames) {
-      const m = /^POS(\d{3,})$/.exec(t.name);
-      if (m) maxNo = Math.max(maxNo, Number(m[1]));
-    }
-    const assignedName = `POS${String(maxNo + 1).padStart(3, "0")}`;
-
+    // 같은 매장에서 동시에 등록돼 이름이 겹치면 DB의 유니크 인덱스가 막으므로 다음 번호로 다시 시도한다.
     const apiKey = crypto.randomBytes(24).toString("hex");
-    const terminal = await PosTerminal.create({
-      storeId: provision.storeId,
-      name: assignedName,
-      apiKey,
-      status: "ACTIVE",
-      lastSeenAt: new Date(),
-      isPrimary: isFirstTerminal,
-    });
+    let terminal;
+    let assignedName = "";
+    for (let attempt = 0; attempt < 6; attempt++) {
+      assignedName = await nextTerminalName(provision.storeId, attempt);
+      try {
+        terminal = await PosTerminal.create({
+          storeId: provision.storeId,
+          name: assignedName,
+          apiKey,
+          status: "ACTIVE",
+          lastSeenAt: new Date(),
+          isPrimary: isFirstTerminal,
+        });
+        break;
+      } catch (e) {
+        if (!isDuplicateKey(e) || attempt === 5) throw e;
+      }
+    }
+    if (!terminal) return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
 
     return NextResponse.json({
       ok: true,

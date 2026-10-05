@@ -6,6 +6,7 @@ import Store from "@/lib/models/Store";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
 import { publishPointChange } from "@/lib/realtime";
+import { nextTerminalName, isDuplicateKey } from "@/lib/pos-terminal-name";
 
 // 등록된 포스기를 다른 매장으로 옮긴다.
 // - 본사(owner): 어느 고객사·매장으로든 이동 가능.
@@ -35,20 +36,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ storeId
     // 이동한 매장에 같은 이름의 포스기가 있으면 새 일련번호를 받는다. 이동하면 그 매장의 대표 포스기는 따로 지정하기 전까지 기존 대표를 유지한다.
     const siblings = await PosTerminal.find({ storeId: targetStoreId }).select("name isPrimary status").lean();
     let name = terminal.name;
-    if (siblings.some((t) => t.name === name && t.status === "ACTIVE")) {
-      let max = 0;
-      for (const t of siblings) {
-        const m = /^POS(\d{3,})$/.exec(t.name);
-        if (m) max = Math.max(max, Number(m[1]));
-      }
-      name = `POS${String(max + 1).padStart(3, "0")}`;
-    }
+    if (siblings.some((t) => t.name === name && t.status === "ACTIVE")) name = await nextTerminalName(targetStoreId);
     const hadPrimary = siblings.some((t) => t.status === "ACTIVE" && t.isPrimary);
 
     terminal.storeId = target._id;
-    terminal.name = name;
     terminal.isPrimary = !hadPrimary; // 옮겨 간 매장에 대표가 없으면 이 포스기가 대표
-    await terminal.save();
+    for (let attempt = 0; attempt < 6; attempt++) {
+      terminal.name = name;
+      try {
+        await terminal.save();
+        break;
+      } catch (e) {
+        if (!isDuplicateKey(e) || attempt === 5) throw e;
+        name = await nextTerminalName(targetStoreId, attempt + 1); // 동시에 같은 이름이 생긴 경우 다음 번호로
+      }
+    }
 
     await AuditLog.create({
       storeId: target._id,

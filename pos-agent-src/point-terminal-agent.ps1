@@ -151,6 +151,8 @@ function Register-Terminal {
     Save-Config $cfg
     Remove-Item $ProvisionPath -Force -ErrorAction SilentlyContinue
     Write-Host "등록 완료 — '$where' 매장의 포스기($name)로 연결되었습니다." -ForegroundColor Green
+    # 서버가 정해준 포스기 이름(POS001…)을 바로 보여준다 — 매장 관리모드 대시보드의 이름과 같다.
+    [System.Windows.Forms.MessageBox]::Show("등록이 완료되었습니다.`n`n  포스기 이름: $name`n  매장: $where`n`n매장 관리모드 대시보드에서 이 이름을 확인하고 바꿀 수 있습니다.", "포인트 관리 프로그램", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
     return ($cfg | ConvertTo-Json | ConvertFrom-Json)
 }
 
@@ -164,7 +166,7 @@ function Show-TerminalList {
         return
     }
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "포스기 목록 — $($cfg.storeName)"; $form.Width = 460; $form.Height = 360; $form.StartPosition = "CenterScreen"
+    $form.Text = "포스기 목록 — $($cfg.storeName) (이 포스기: $($cfg.name))"; $form.Width = 460; $form.Height = 360; $form.StartPosition = "CenterScreen"
     $form.TopMost = $true; $form.FormBorderStyle = "FixedDialog"
     $list = New-Object System.Windows.Forms.ListBox
     $list.Location = New-Object System.Drawing.Point(15, 15); $list.Width = 415; $list.Height = 260
@@ -481,6 +483,16 @@ $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
 $Script:RetryError = $null
 $Script:ServerAgentVersion = $null
+
+# 트레이 아이콘 툴팁과 메뉴 맨 위 줄에 "이 포스기의 이름·소속 매장"을 보여준다(이름은 서버 값이 기준).
+function Update-IdentityDisplay {
+    $where = "$($cfg.storeName)"
+    if ($cfg.companyName) { $where = "$($cfg.companyName) › $($cfg.storeName)" }
+    $tip = "포인트 관리 — $($cfg.name)"
+    if ($tip.Length -gt 60) { $tip = $tip.Substring(0, 60) }  # 트레이 툴팁 길이 제한(63자)
+    $trayIcon.Text = $tip
+    $itemIdentity.Text = "$($cfg.name) · $where"
+}
 function Set-AgentError([string]$msg) {
     $Script:LastError = $msg
     $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
@@ -501,7 +513,12 @@ function Send-Heartbeat {
             try { Show-ResultToast "이 포스기가 이동되었습니다`n$($res.companyName) › $($res.storeName)" } catch { }
         }
         if ($res.agentVersion) { $Script:ServerAgentVersion = [string]$res.agentVersion; try { Update-UpdateMenuText } catch { } }
-        if ($res.terminalName -and $res.terminalName -ne $cfg.name) { $cfg.name = $res.terminalName; try { $trayIcon.Text = "포인트 관리 프로그램 — $($cfg.name)" } catch { } }
+        if ($res.terminalName -and $res.terminalName -ne $cfg.name) {
+            # 매장 관리모드에서 포스기 이름을 바꿨다 — 화면 표시를 바꾸고 설정 파일에도 저장해 다음 시작 때도 같은 이름을 쓴다.
+            $cfg.name = $res.terminalName
+            try { Save-Config $cfg } catch { }
+        }
+        try { Update-IdentityDisplay } catch { }
         if ($res.storeUrl) { Set-ManageShortcut -isPrimary $Script:IsPrimary -storeUrl $res.storeUrl }
         return $true
     } catch {
@@ -525,7 +542,7 @@ function Send-TransferLog([string]$kind, [string]$phone, $amount, $localBefore, 
 
 function Show-RedeemPopup {
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "포인트 사용"; $form.Width = 380; $form.Height = 260; $form.StartPosition = "CenterScreen"
+    $form.Text = "포인트 사용 — $($cfg.name)"; $form.Width = 380; $form.Height = 260; $form.StartPosition = "CenterScreen"
     $form.TopMost = $true; $form.FormBorderStyle = "FixedDialog"
 
     $lblPhone = New-Object System.Windows.Forms.Label; $lblPhone.Text = "손님 전화번호"; $lblPhone.Location = New-Object System.Drawing.Point(20, 20); $lblPhone.AutoSize = $true
@@ -789,6 +806,9 @@ $trayIcon.Icon = if (Test-Path "$PSScriptRoot\pointmanager.ico") { New-Object Sy
 $trayIcon.Text = "포인트 관리 프로그램 — $($cfg.name)"
 $trayIcon.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
+$itemIdentity = $menu.Items.Add("$($cfg.name)")
+$itemIdentity.Enabled = $false
+$menu.Items.Add("-") | Out-Null
 $itemRedeem = $menu.Items.Add("포인트 사용...")
 $itemRedeem.Add_Click({ Show-RedeemPopup })
 $itemList = $menu.Items.Add("포스기 목록...")
@@ -803,11 +823,12 @@ $itemUpdate.Add_Click({ Invoke-AgentUpdate })
 $itemExit = $menu.Items.Add("종료")
 $itemExit.Add_Click({ $trayIcon.Visible = $false; [System.Windows.Forms.Application]::Exit() })
 $trayIcon.ContextMenuStrip = $menu
+try { Update-IdentityDisplay } catch { }
 $trayIcon.Add_DoubleClick({ Show-RedeemPopup })
 
 Write-Host "터미널 '$($cfg.name)' 가동 시작 — 트레이 아이콘 더블클릭으로 '포인트 사용' 팝업을 엽니다."
 
-$heartbeatTimer = New-Object System.Windows.Forms.Timer; $heartbeatTimer.Interval = 60000
+$heartbeatTimer = New-Object System.Windows.Forms.Timer; $heartbeatTimer.Interval = 30000  # 30초마다 — 이름·소속 매장·새 버전 변경을 빨리 반영
 $heartbeatTimer.Add_Tick({ Send-Heartbeat | Out-Null })
 $heartbeatTimer.Start()
 Send-Heartbeat | Out-Null
