@@ -9,7 +9,9 @@ export type PointEventType =
   | "ADJUST"
   | "VENDOR_EARN" // 벤더(챔프 등) POS가 자체적으로 적립한 내역을 동기화로 반영
   | "VENDOR_USE" // 벤더 POS 결제화면에서 계산원이 포인트를 사용(차감)한 내역을 동기화로 반영
-  | "VENDOR_IMPORT"; // 카드 최초 연결 시 벤더 POS에 이미 있던 잔액을 1회성으로 가져옴
+  | "VENDOR_IMPORT" // 카드 최초 연결 시 벤더 POS에 이미 있던 잔액을 1회성으로 가져옴
+  | "EARN_CANCEL" // 결제 취소로 포스 적립을 취소(포인트 차감)
+  | "USE_CANCEL"; // 결제 취소로 포스 사용을 취소(포인트 환원)
 
 export type PointEventStatus = "PENDING" | "APPROVED" | "REJECTED" | "CONFIRMED";
 
@@ -28,6 +30,8 @@ export interface IPointEvent {
   vendorTxnId?: string; // 벤더 동기화 이벤트의 멱등키 (storeId 범위 내 고유) — 재전송돼도 중복 반영 방지
   clientTxnId?: string; // POS 앱(적립/차감)에서 발급하는 멱등키 — 새로고침/이중클릭으로 인한 중복 반영 방지
   terminalId?: Types.ObjectId | null; // 어느 POS 단말에서 발생했는지 — 일일 정산 집계용 정식 필드(2026-09-27)
+  recordedAt?: Date; // 서버가 받아 기록한 시각 — occurredAt(포스에서 발생한 시각)과 다르면 인터넷이 끊겼다 뒤늦게 반영된 건
+  offline?: boolean; // 오프라인 후 뒤늦게 서버에 반영된 건
   cardNo?: string; // 결제에 쓰인 벤더 POS 회원카드 식별번호 — 소유권 매핑이 아니라 그 거래 시점의 사실만 기록(카드는 빌려 쓸 수 있어 신원 증거로 쓰지 않음)
   occurredAt: Date;
 }
@@ -50,6 +54,8 @@ const PointEventSchema = new Schema<IPointEvent>({
       "VENDOR_EARN",
       "VENDOR_USE",
       "VENDOR_IMPORT",
+      "EARN_CANCEL",
+      "USE_CANCEL",
     ],
     required: true,
   },
@@ -66,6 +72,8 @@ const PointEventSchema = new Schema<IPointEvent>({
   clientTxnId: { type: String },
   terminalId: { type: Schema.Types.ObjectId, ref: "PosTerminal", default: null },
   cardNo: { type: String },
+  recordedAt: { type: Date },
+  offline: { type: Boolean },
   occurredAt: { type: Date, default: Date.now },
 });
 

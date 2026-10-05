@@ -8,7 +8,7 @@ export async function GET() {
   try {
     await dbConnect();
     const session = await requireSession();
-    const history = await getMyPointHistory(session.sub);
+    const history = await getMyPointHistory(session.sub, undefined, { onlyOpen: true });
     return NextResponse.json({ history });
   } catch (e) {
     return handleApiError(e);

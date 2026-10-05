@@ -14,9 +14,9 @@ export async function POST(req: Request) {
     rateLimit(`agent-register:${clientIp(req)}`, 20, 10 * 60 * 1000);
 
     await dbConnect();
-    const { token, terminalName } = await req.json();
-    if (!token || !terminalName) {
-      return NextResponse.json({ error: "TOKEN_AND_NAME_REQUIRED" }, { status: 400 });
+    const { token } = await req.json();
+    if (!token) {
+      return NextResponse.json({ error: "TOKEN_REQUIRED" }, { status: 400 });
     }
 
     // 조회와 삭제를 한 번에(원자적) — 같은 토큰으로 동시에 두 번 등록되는 것을 막는다.
@@ -31,10 +31,19 @@ export async function POST(req: Request) {
     const hasPrimary = await PosTerminal.exists({ storeId: provision.storeId, status: "ACTIVE", isPrimary: true });
     const isFirstTerminal = !hasPrimary;
 
+    // 단말 이름은 등록 순서대로 POS001, POS002… 로 서버가 정한다(매장 관리모드 대시보드에서 바꿀 수 있다).
+    const existingNames = await PosTerminal.find({ storeId: provision.storeId }).select("name").lean();
+    let maxNo = 0;
+    for (const t of existingNames) {
+      const m = /^POS(\d{3,})$/.exec(t.name);
+      if (m) maxNo = Math.max(maxNo, Number(m[1]));
+    }
+    const assignedName = `POS${String(maxNo + 1).padStart(3, "0")}`;
+
     const apiKey = crypto.randomBytes(24).toString("hex");
     const terminal = await PosTerminal.create({
       storeId: provision.storeId,
-      name: String(terminalName).slice(0, 100),
+      name: assignedName,
       apiKey,
       status: "ACTIVE",
       lastSeenAt: new Date(),
@@ -47,6 +56,7 @@ export async function POST(req: Request) {
       apiKey,
       isPrimary: isFirstTerminal,
       storeName: store.name,
+      terminalName: assignedName,
     });
   } catch (e) {
     return handleApiError(e);

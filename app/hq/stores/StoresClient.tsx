@@ -15,7 +15,9 @@ const ERRORS: Record<string, string> = {
 };
 
 // 매장 한 곳의 관리자 목록·지정·해제
-function ManagersPanel({ store }: { store: Store }) {
+function ManagersPanel({ store, onRenamed }: { store: Store; onRenamed: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(store.name);
   const [managers, setManagers] = useState<Manager[] | null>(null);
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -65,9 +67,40 @@ function ManagersPanel({ store }: { store: Store }) {
     load();
   }
 
+  async function rename(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    const res = await fetch(`/api/v1/stores/${store._id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: editName }),
+    });
+    if (!res.ok) {
+      setMsg({ text: "이름을 바꾸지 못했습니다. 이름을 확인하고 다시 시도해 주세요.", ok: false });
+      return;
+    }
+    setEditing(false);
+    onRenamed();
+  }
+
   return (
     <div className="card">
-      <div className="card-title">{store.name}</div>
+      <div className="card-title">
+        {editing ? (
+          <form onSubmit={rename} style={{ display: "flex", gap: 8 }}>
+            <input style={{ marginBottom: 0 }} value={editName} onChange={(e) => setEditName(e.target.value)} required />
+            <button type="submit" className="sm">저장</button>
+            <button type="button" className="sm ghost" onClick={() => setEditing(false)}>취소</button>
+          </form>
+        ) : (
+          <>
+            {store.name}
+            <button type="button" className="sm ghost" style={{ marginLeft: 8 }} onClick={() => { setEditName(store.name); setEditing(true); }}>
+              이름 변경
+            </button>
+          </>
+        )}
+      </div>
       {managers === null && <p className="muted">불러오는 중...</p>}
       {managers?.length === 0 && (
         <p className="faint" style={{ margin: "0 0 12px" }}>
@@ -217,7 +250,7 @@ export default function StoresClient({ isOwner }: { isOwner: boolean }) {
         </div>
       )}
       {stores?.map((s) => (
-        <ManagersPanel key={s._id} store={s} />
+        <ManagersPanel key={s._id} store={s} onRenamed={load} />
       ))}
     </div>
   );

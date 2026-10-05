@@ -8,6 +8,9 @@ import Company from "./models/Company";
 import User from "./models/User";
 import VendorImportRecord from "./models/VendorImportRecord";
 import RedeemLock from "./models/RedeemLock";
+import PosTransferLog, { type PosTransferKind } from "./models/PosTransferLog";
+import PosTerminal from "./models/PosTerminal";
+import { publishPointChange } from "./realtime";
 import { ApiError } from "./rbac";
 
 /**
@@ -92,6 +95,20 @@ export type CompanyPointSummary = {
 };
 
 /** 고객의 포인트를 **고객사별로** 묶어서 돌려준다 — 고객사가 다르면 잔액을 합치지 않는다. */
+/** 본사가 "고객 웹 조회"를 꺼 둔 고객사 id 목록. */
+export async function closedCompanyIds(): Promise<string[]> {
+  const rows = await Company.find({ customerWebEnabled: false }).select("_id").lean();
+  return rows.map((c) => String(c._id));
+}
+
+/** 고객 본인 웹 화면용 — 조회를 닫은 고객사는 제외한다(고객사 화면용 getCompanyPointSummary는 그대로 전부 본다). */
+export async function getMyOpenPointSummary(userId: string) {
+  const [all, closed] = await Promise.all([getMyPointSummary(userId), closedCompanyIds()]);
+  const closedSet = new Set(closed);
+  const open = all.companies.filter((c) => !closedSet.has(c.companyId));
+  return { companies: open, hiddenCompanies: all.companies.length - open.length };
+}
+
 export async function getMyPointSummary(userId: string): Promise<{ companies: CompanyPointSummary[] }> {
   const accounts = await PointAccount.find({ userId }).populate("storeId", "name").lean();
   const byCompany = new Map<string, CompanyPointSummary>();
@@ -135,9 +152,13 @@ export async function hasCompanyRelation(userId: string, companyId: string): Pro
   return !!(await PointEvent.exists({ userId, companyId }));
 }
 
-export async function getMyPointHistory(userId: string, companyId?: string) {
+export async function getMyPointHistory(userId: string, companyId?: string, opts?: { onlyOpen?: boolean }) {
   const filter: Record<string, unknown> = { userId };
   if (companyId) filter.companyId = companyId;
+  else if (opts?.onlyOpen) {
+    const closed = await closedCompanyIds();
+    if (closed.length) filter.companyId = { $nin: closed };
+  }
   return PointEvent.find(filter)
     .sort({ occurredAt: -1 })
     .limit(200)
@@ -620,6 +641,55 @@ export async function getOrCreateUserByPhone(phone: string) {
 // 카드는 신원 증거로 쓰지 않는다(빌려 쓸 수 있음) — 전화번호가 확인된 결제만 적립하고,
 // 사용도 전화번호로 조회한다. 카드번호는 그 거래의 사실로만 PointEvent에 남긴다(소유권 아님).
 
+/** 포스에서 발생한 시각(occurredAt, 선택)과 서버가 받은 시각의 차이로 "인터넷이 끊겼다 뒤늦게 반영된 건"을 가려낸다. */
+function agentTimes(occurredAtIso?: string | null) {
+  const recordedAt = new Date();
+  let occurredAt = recordedAt;
+  if (occurredAtIso) {
+    const d = new Date(occurredAtIso);
+    // 포스 시계가 크게 틀렸거나 미래/너무 오래된 값은 믿지 않는다(최대 30일 이내, 미래는 현재로 보정)
+    if (!isNaN(d.getTime()) && d.getTime() > recordedAt.getTime() - 30 * 24 * 3600 * 1000) {
+      occurredAt = d.getTime() > recordedAt.getTime() ? recordedAt : d;
+    }
+  }
+  const delaySec = Math.max(0, Math.round((recordedAt.getTime() - occurredAt.getTime()) / 1000));
+  return { occurredAt, recordedAt, delaySec, offline: delaySec > 180 };
+}
+
+/** 포스기 ↔ 서버 이동 기록 한 줄. 기록 실패가 포인트 처리를 막지 않게 오류는 삼킨다. */
+export async function logPosTransfer(input: {
+  storeId: string;
+  terminalId?: string | null;
+  userId?: string | null;
+  phone?: string;
+  kind: PosTransferKind;
+  direction: "POS_TO_SERVER" | "SERVER_TO_POS" | "NONE";
+  amount: number;
+  localBefore?: number;
+  localAfter?: number;
+  serverBalanceAfter?: number;
+  vendorTxnId?: string;
+  occurredAt?: Date;
+  recordedAt?: Date;
+  delaySec?: number;
+  offline?: boolean;
+  note?: string;
+}) {
+  try {
+    const store = await Store.findById(input.storeId).select("companyId").lean();
+    await PosTransferLog.create({
+      ...input,
+      companyId: store?.companyId,
+      terminalId: input.terminalId || undefined,
+      userId: input.userId || undefined,
+      occurredAt: input.occurredAt ?? new Date(),
+      recordedAt: input.recordedAt ?? new Date(),
+    });
+  } catch (e) {
+    console.error("[pos-transfer-log] 기록 실패", e);
+  }
+}
+
 export type AgentEarnInput = {
   storeId: string;
   terminalId: string;
@@ -633,12 +703,14 @@ export type AgentEarnInput = {
   cardNo?: string;
   vendorTxnId: string; // 이 결제 1건의 멱등키(챔프 거래키 조합) — 재전송돼도 중복 적립 안 됨
   existingVendorBalance?: number | null; // 이 매장에서 이 고객이 처음 동기화되는 순간이면, 벤더 POS에 남아있던 잔액(1회 수입)
+  occurredAt?: string | null; // 포스에서 실제 결제된 시각(오프라인 후 뒤늦게 반영될 때 원래 시각을 보존)
 };
 
 /** 에이전트가 결제완료 트리거로 호출 — 전화번호가 확인된(회원 레코드에 등록된) 거래만 적립한다. */
 export async function posAgentEarn(input: AgentEarnInput) {
   const { storeId, terminalId, phone, addAmount, saleAmount, cardNo, vendorTxnId, existingVendorBalance } = input;
   if (addAmount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
+  const when = agentTimes(input.occurredAt);
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
   const companyId = String(store.companyId);
@@ -688,6 +760,9 @@ export async function posAgentEarn(input: AgentEarnInput) {
       amount: earnAmount,
       status: "CONFIRMED",
       vendorTxnId,
+      occurredAt: when.occurredAt,
+      recordedAt: when.recordedAt,
+      offline: when.offline,
       reason: `포스 자체 적립 반영 (챔프 기록 ${addAmount}원${saleAmount ? `, 결제액 ${saleAmount}` : ""}, terminal ${terminalId})`,
     });
   } catch (e) {
@@ -706,7 +781,89 @@ export async function posAgentEarn(input: AgentEarnInput) {
   }
 
   const availableBalance = await getAvailableForStore(customerId, storeId);
+  await logPosTransfer({
+    storeId, terminalId, userId: customerId, phone, kind: "EARN_TO_SERVER", direction: "POS_TO_SERVER", amount: earnAmount,
+    serverBalanceAfter: availableBalance, vendorTxnId, occurredAt: when.occurredAt, recordedAt: when.recordedAt, delaySec: when.delaySec, offline: when.offline,
+    note: when.offline ? "인터넷 끊김 후 뒤늦게 서버에 반영" : undefined,
+  });
+  publishPointChange({ companyId, storeId, userId: customerId }, "EARN");
   return { event, earnAmount, availableBalance, customerId };
+}
+
+/** 결제 취소로 챔프가 적립을 되돌린 건(MEMP_ADD_AMT < 0) — 서버 이 매장 계좌에서 그만큼 차감한다(이미 써서 모자라면 마이너스로 강제 차감 + 감사로그). */
+export async function posAgentEarnCancel(input: { storeId: string; terminalId: string; phone: string; cancelAmount: number; cardNo?: string; vendorTxnId: string; occurredAt?: string | null }) {
+  const { storeId, terminalId, phone, cardNo, vendorTxnId } = input;
+  const cancelAmount = Math.floor(input.cancelAmount);
+  if (!(cancelAmount > 0)) throw new ApiError(400, "INVALID_AMOUNT");
+  const companyId = await companyIdOfStore(storeId);
+  const user = await getOrCreateUserByPhone(phone);
+  const customerId = String(user._id);
+  const when = agentTimes(input.occurredAt);
+
+  const dup = await PointEvent.findOne({ storeId, vendorTxnId }).lean();
+  if (dup) return { event: dup, duplicate: true, availableBalance: await getAvailableForStore(customerId, storeId) };
+
+  const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
+  const before = account.balance;
+  await PointAccount.findByIdAndUpdate(account._id, { $inc: { balance: -cancelAmount } });
+  let event;
+  try {
+    event = await PointEvent.create({
+      userId: customerId, companyId, storeId, terminalId, cardNo, type: "EARN_CANCEL", amount: cancelAmount, status: "CONFIRMED", vendorTxnId,
+      occurredAt: when.occurredAt, recordedAt: when.recordedAt, offline: when.offline,
+      reason: `결제 취소로 적립 취소 (terminal ${terminalId})`,
+    });
+  } catch (e) {
+    // 같은 취소가 동시에 두 번 들어온 경우 — 방금 차감한 것을 되돌린다
+    if ((e as { code?: number }).code === 11000) {
+      await PointAccount.findByIdAndUpdate(account._id, { $inc: { balance: cancelAmount } });
+      const existing = await PointEvent.findOne({ storeId, vendorTxnId }).lean();
+      return { event: existing, duplicate: true, availableBalance: await getAvailableForStore(customerId, storeId) };
+    }
+    throw e;
+  }
+  if (before < cancelAmount) {
+    await AuditLog.create({ storeId, actorType: "AGENT", actorId: terminalId, action: "EARN_CANCEL_SHORTFALL", meta: { customerId, amount: cancelAmount, vendorTxnId, balanceBefore: before } });
+  }
+  const availableBalance = await getAvailableForStore(customerId, storeId);
+  await logPosTransfer({ storeId, terminalId, userId: customerId, phone, kind: "EARN_CANCEL", direction: "POS_TO_SERVER", amount: -cancelAmount, serverBalanceAfter: availableBalance, vendorTxnId, occurredAt: when.occurredAt, recordedAt: when.recordedAt, delaySec: when.delaySec, offline: when.offline });
+  publishPointChange({ companyId, storeId, userId: customerId }, "EARN_CANCEL");
+  return { event, availableBalance, customerId };
+}
+
+/** 결제 취소로 챔프가 사용을 되돌린 건(MEMP_USED_AMT < 0) — 이 매장 계좌로 환원한다. */
+export async function posAgentRedeemCancel(input: { storeId: string; terminalId: string; phone: string; refundAmount: number; cardNo?: string; vendorTxnId: string; occurredAt?: string | null }) {
+  const { storeId, terminalId, phone, cardNo, vendorTxnId } = input;
+  const refundAmount = Math.floor(input.refundAmount);
+  if (!(refundAmount > 0)) throw new ApiError(400, "INVALID_AMOUNT");
+  const companyId = await companyIdOfStore(storeId);
+  const user = await getOrCreateUserByPhone(phone);
+  const customerId = String(user._id);
+  const when = agentTimes(input.occurredAt);
+
+  const dup = await PointEvent.findOne({ storeId, vendorTxnId }).lean();
+  if (dup) return { event: dup, duplicate: true, availableBalance: await getAvailableForStore(customerId, storeId) };
+
+  let event;
+  try {
+    event = await PointEvent.create({
+      userId: customerId, companyId, storeId, terminalId, cardNo, type: "USE_CANCEL", amount: refundAmount, status: "CONFIRMED", vendorTxnId,
+      occurredAt: when.occurredAt, recordedAt: when.recordedAt, offline: when.offline,
+      reason: `결제 취소로 사용 취소(환원) (terminal ${terminalId})`,
+    });
+  } catch (e) {
+    if ((e as { code?: number }).code === 11000) {
+      const existing = await PointEvent.findOne({ storeId, vendorTxnId }).lean();
+      return { event: existing, duplicate: true, availableBalance: await getAvailableForStore(customerId, storeId) };
+    }
+    throw e;
+  }
+  const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
+  await atomicCredit(account._id, refundAmount);
+  const availableBalance = await getAvailableForStore(customerId, storeId);
+  await logPosTransfer({ storeId, terminalId, userId: customerId, phone, kind: "USE_CANCEL", direction: "POS_TO_SERVER", amount: -refundAmount, serverBalanceAfter: availableBalance, vendorTxnId, occurredAt: when.occurredAt, recordedAt: when.recordedAt, delaySec: when.delaySec, offline: when.offline });
+  publishPointChange({ companyId, storeId, userId: customerId }, "USE_CANCEL");
+  return { event, availableBalance, customerId };
 }
 
 // ─── 매장 전체 일괄 초기 이전 (2026-09-27 추가) ────────────────────────────────
@@ -772,8 +929,11 @@ export async function bulkImportLegacyBalances(
       type: "VENDOR_IMPORT",
       amount: balance,
       status: "CONFIRMED",
+      recordedAt: new Date(),
       reason: `포스기 초기화 일괄 이전 (terminal ${terminalId})`,
     });
+    await logPosTransfer({ storeId, terminalId, userId: customerId, phone, kind: "BULK_IMPORT", direction: "POS_TO_SERVER", amount: balance, note: "포스기 초기 설치 일괄 이전" });
+    publishPointChange({ companyId, storeId, userId: customerId }, "BULK_IMPORT");
     await AuditLog.create({
       storeId,
       actorType: "AGENT",
@@ -794,6 +954,14 @@ export async function bulkImportLegacyBalances(
  * 화면에 띄운 뒤 각각 사용해버리면 서버 잔액은 하나인데 이중사용이 생길 수 있어(2026-09-28),
  * 조회 시점에 고객 단위로 잠근다 — 이미 다른 포스기가 조회 중이면 거부한다.
  */
+export class RedeemBusyError extends ApiError {
+  holder: { companyName?: string; storeName?: string; terminalName?: string };
+  constructor(holder: { companyName?: string; storeName?: string; terminalName?: string }) {
+    super(409, "REDEEM_IN_PROGRESS_ELSEWHERE");
+    this.holder = holder;
+  }
+}
+
 export async function posAgentRedeemLookup(storeId: string, terminalId: string, phone: string) {
   const user = await getOrCreateUserByPhone(phone);
   const customerId = String(user._id);
@@ -805,7 +973,20 @@ export async function posAgentRedeemLookup(storeId: string, terminalId: string, 
       // 같은 포스기가 같은 손님을 다시 조회하는 것(전화번호를 잘못 눌렀다 다시 조회, 팝업을 닫았다 다시 열기 등)은 막지 않고
       // 잠금 시간만 갱신한다. 다른 포스기가 잡고 있을 때만 이중사용 방지를 위해 거부한다.
       const held = await RedeemLock.findOneAndUpdate({ userId: customerId, terminalId }, { $set: { lockedAt: new Date() } });
-      if (!held) throw new ApiError(409, "REDEEM_IN_PROGRESS_ELSEWHERE");
+      if (!held) {
+        // 다른 포스기가 이 손님을 사용 조회 중 — 어느 고객사·매장·포스기인지 알려 포스 화면 팝업에 표시한다(적립은 계속 가능).
+        const holder = await RedeemLock.findOne({ userId: customerId }).lean();
+        let holderInfo: { companyName?: string; storeName?: string; terminalName?: string } = {};
+        if (holder) {
+          const [hs, ht] = await Promise.all([
+            Store.findById(holder.storeId).select("name companyId").lean(),
+            PosTerminal.findById(holder.terminalId).select("name").lean(),
+          ]);
+          const hc = hs ? await Company.findById(hs.companyId).select("name").lean() : null;
+          holderInfo = { companyName: hc?.name, storeName: hs?.name, terminalName: ht?.name };
+        }
+        throw new RedeemBusyError(holderInfo);
+      }
     } else {
       throw e;
     }
@@ -822,6 +1003,7 @@ export type AgentRedeemInput = {
   usedAmount: number;
   cardNo?: string;
   vendorTxnId: string;
+  occurredAt?: string | null;
 };
 
 /**
@@ -835,6 +1017,7 @@ export async function posAgentRedeemApply(input: AgentRedeemInput) {
   const companyId = await companyIdOfStore(storeId);
   const user = await getOrCreateUserByPhone(phone);
   const customerId = String(user._id);
+  const when = agentTimes(input.occurredAt);
 
   try {
     const dup = await PointEvent.findOne({ storeId, vendorTxnId }).lean();
@@ -857,6 +1040,9 @@ export async function posAgentRedeemApply(input: AgentRedeemInput) {
       amount: usedAmount,
       status: "CONFIRMED",
       vendorTxnId,
+      occurredAt: when.occurredAt,
+      recordedAt: when.recordedAt,
+      offline: when.offline,
       reason: `포스 결제 시 포인트 사용 (terminal ${terminalId})${note ? " — " + note : ""}`,
     });
     if (note) {
@@ -868,7 +1054,14 @@ export async function posAgentRedeemApply(input: AgentRedeemInput) {
         meta: { customerId, amount: usedAmount, vendorTxnId },
       });
     }
-    return { event, breakdown, availableBalance: await getAvailableForStore(customerId, storeId) };
+    const availableBalance = await getAvailableForStore(customerId, storeId);
+    await logPosTransfer({
+      storeId, terminalId, userId: customerId, phone, kind: "USE_TO_SERVER", direction: "POS_TO_SERVER", amount: usedAmount,
+      serverBalanceAfter: availableBalance, vendorTxnId, occurredAt: when.occurredAt, recordedAt: when.recordedAt, delaySec: when.delaySec, offline: when.offline,
+      note: note ?? (when.offline ? "인터넷 끊김 후 뒤늦게 서버에 반영" : undefined),
+    });
+    publishPointChange({ companyId, storeId, userId: customerId }, "USE");
+    return { event, breakdown, availableBalance };
   } finally {
     // 성공/중복/에러 어떤 경우든 조회 시점에 걸어둔 잠금은 반드시 풀어준다(다음 손님이 막히지 않게).
     await RedeemLock.deleteOne({ userId: customerId }).catch(() => {});

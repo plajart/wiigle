@@ -1,5 +1,6 @@
 "use client";
 
+import { useRealtime } from "../components/useRealtime";
 import { useCallback, useEffect, useState } from "react";
 
 type CompanySummary = {
@@ -9,7 +10,7 @@ type CompanySummary = {
   stores: { storeId: string; storeName: string; balance: number }[];
   total: number;
 };
-type Summary = { companies: CompanySummary[] };
+type Summary = { companies: CompanySummary[]; hiddenCompanies?: number };
 type CardInfo = { cardNo: string; qrDataUrl: string };
 
 export default function MeDashboardClient() {
@@ -48,6 +49,7 @@ export default function MeDashboardClient() {
   useEffect(() => {
     load();
   }, [load]);
+  useRealtime(load); // 매장에서 적립·사용되면 새로고침 없이 바로 반영
 
   return (
     <div>
@@ -94,7 +96,7 @@ export default function MeDashboardClient() {
         <div className="card">
           <div className="empty-state">
             <div className="ic">P</div>
-            아직 적립된 포인트가 없습니다
+            {summary.hiddenCompanies ? "이용하시는 고객사에서 웹 포인트 조회를 제공하지 않습니다. 매장에서 문의해 주세요." : "아직 적립된 포인트가 없습니다"}
           </div>
         </div>
       )}

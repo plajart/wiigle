@@ -23,6 +23,7 @@ export async function GET() {
         _id: String(c._id),
         name: c.name,
         createdAt: c.createdAt,
+        customerWebEnabled: c.customerWebEnabled !== false,
         storeCount: storesBy.get(String(c._id)) ?? 0,
         adminCount: adminsBy.get(String(c._id)) ?? 0,
       })),

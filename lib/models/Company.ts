@@ -6,11 +6,13 @@ export interface ICompany {
   _id: Types.ObjectId;
   name: string;
   createdAt: Date;
+  customerWebEnabled?: boolean; // false면 이 고객사의 고객은 웹에서 포인트를 조회할 수 없다(본사가 고객사별로 끄고 켠다). 기본 true
 }
 
 const CompanySchema = new Schema<ICompany>({
   name: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
+  customerWebEnabled: { type: Boolean, default: true },
 });
 
 export default (models.Company as mongoose.Model<ICompany>) || model<ICompany>("Company", CompanySchema);

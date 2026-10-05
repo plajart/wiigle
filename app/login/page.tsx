@@ -59,7 +59,13 @@ function LoginForm() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "로그인 실패");
+        const LOGIN_ERRORS: Record<string, string> = {
+          INVALID_CREDENTIALS: "휴대폰번호 또는 비밀번호가 맞지 않습니다.",
+          CUSTOMER_WEB_CLOSED: "이용하시는 고객사에서 웹 포인트 조회를 제공하지 않습니다. 매장에서 문의해 주세요.",
+          TOO_MANY_REQUESTS: "시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
+          MISSING_FIELDS: "휴대폰번호와 비밀번호를 입력해주세요.",
+        };
+        setError(LOGIN_ERRORS[data.error] ?? "로그인하지 못했습니다. 잠시 후 다시 시도해주세요.");
         return;
       }
       // 영수증 QR로 들어왔다가 로그인한 경우엔 카드 연결을 마저 진행하도록 그 화면으로 돌려보낸다.

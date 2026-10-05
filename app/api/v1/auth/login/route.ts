@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
+import PointAccount from "@/lib/models/PointAccount";
+import Company from "@/lib/models/Company";
 import User from "@/lib/models/User";
 import { verifyPassword, signSession, SESSION_COOKIE } from "@/lib/auth";
 import { normalizePhone } from "@/lib/password";
@@ -24,6 +26,15 @@ export async function POST(req: Request) {
     const user = await User.findOne({ phone: { $in: [String(phone), normalizePhone(phone)] } });
     if (!user || !user.passwordHash || !(await verifyPassword(String(password), user.passwordHash))) {
       return NextResponse.json({ error: "INVALID_CREDENTIALS" }, { status: 401 });
+    }
+
+    // 본사가 "고객 웹 조회"를 닫은 고객사의 고객은(그 고객사에서만 이용한 경우) 웹 로그인을 막는다. 운영 계정은 항상 가능.
+    if (user.role === "user") {
+      const ids = (await PointAccount.distinct("companyId", { userId: user._id })).map(String);
+      if (ids.length > 0) {
+        const open = await Company.exists({ _id: { $in: ids }, customerWebEnabled: { $ne: false } });
+        if (!open) return NextResponse.json({ error: "CUSTOMER_WEB_CLOSED" }, { status: 403 });
+      }
     }
 
     const firstLogin = user.firstLogin === true || !!user.initialPassword;

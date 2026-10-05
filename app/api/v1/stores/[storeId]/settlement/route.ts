@@ -7,6 +7,9 @@ import { handleApiError } from "@/lib/api-utils";
 
 const EARN_TYPES = ["EARN", "VENDOR_EARN", "VENDOR_IMPORT", "GRANT", "ADJUST"];
 const USE_TYPES = ["REDEEM", "VENDOR_USE"];
+// 결제 취소로 되돌려진 건 — 총 적립/사용에서 빼서 정산이 실제와 맞게 한다.
+const EARN_CANCEL_TYPES = ["EARN_CANCEL"];
+const USE_CANCEL_TYPES = ["USE_CANCEL"];
 
 // 매장 관리자: 특정 날짜(KST)의 일일 정산 — 매장 내 모든 POS 단말을 합친 총 적립/사용 +
 // 단말별 소계 + 개별 거래 상세. 날짜는 캘린더(달력 입력)로 고른 하루(YYYY-MM-DD, KST 기준).
@@ -42,13 +45,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ storeId:
     const detail = events.map((e) => {
       const isEarn = EARN_TYPES.includes(e.type);
       const isUse = USE_TYPES.includes(e.type);
-      if (isEarn) totalEarned += e.amount;
-      if (isUse) totalUsed += e.amount;
+      const earnDelta = isEarn ? e.amount : EARN_CANCEL_TYPES.includes(e.type) ? -e.amount : 0;
+      const useDelta = isUse ? e.amount : USE_CANCEL_TYPES.includes(e.type) ? -e.amount : 0;
+      totalEarned += earnDelta;
+      totalUsed += useDelta;
 
       const tid = e.terminalId ? String(e.terminalId) : "WEB"; // terminalId 없는 이벤트(웹/관리모드 조작 등)는 "WEB"으로 묶음
       const bucket = byTerminal.get(tid) ?? { terminalId: tid, name: terminalName.get(tid) || "웹/관리모드", earned: 0, used: 0, count: 0 };
-      if (isEarn) bucket.earned += e.amount;
-      if (isUse) bucket.used += e.amount;
+      bucket.earned += earnDelta;
+      bucket.used += useDelta;
       bucket.count += 1;
       byTerminal.set(tid, bucket);
 

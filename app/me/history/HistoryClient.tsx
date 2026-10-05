@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRealtime } from "../../components/useRealtime";
+import { useCallback, useEffect, useState } from "react";
 
 type HistoryItem = {
   _id: string;
@@ -22,6 +23,8 @@ const TYPE_LABEL: Record<string, string> = {
   VENDOR_IMPORT: "최초 등록 적립",
   VENDOR_EARN: "적립",
   VENDOR_USE: "사용",
+  EARN_CANCEL: "적립 취소",
+  USE_CANCEL: "사용 취소(환원)",
 };
 
 const TYPE_BADGE_CLASS: Record<string, string> = {
@@ -34,13 +37,18 @@ const TYPE_BADGE_CLASS: Record<string, string> = {
   VENDOR_IMPORT: "gold",
   VENDOR_EARN: "success",
   VENDOR_USE: "danger",
+  EARN_CANCEL: "danger",
+  USE_CANCEL: "success",
 };
+
+// 사용·출금·적립취소는 금액이 양수로 저장돼 있어도 줄어든 포인트이므로 마이너스로 보여준다.
+const DECREASE_TYPES = new Set(["REDEEM", "VENDOR_USE", "TRANSFER_OUT", "EARN_CANCEL"]);
 
 export default function HistoryClient() {
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     fetch("/api/v1/me/points/history")
       .then(async (r) => {
         if (r.status === 401) {
@@ -56,6 +64,11 @@ export default function HistoryClient() {
       })
       .catch(() => setError("네트워크 연결을 확인해주세요."));
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+  useRealtime(load);
 
   return (
     <div>
@@ -74,7 +87,8 @@ export default function HistoryClient() {
           </div>
         )}
         {history?.map((h) => {
-          const positive = h.amount >= 0;
+          const shown = DECREASE_TYPES.has(h.type) ? -Math.abs(h.amount) : h.amount;
+          const positive = shown >= 0;
           return (
             <div className="row" key={h._id}>
               <span>
@@ -87,7 +101,7 @@ export default function HistoryClient() {
               </span>
               <span className="value" style={{ color: positive ? "var(--success)" : "var(--danger)" }}>
                 {positive ? "+" : ""}
-                {h.amount.toLocaleString()}P
+                {shown.toLocaleString()}P
               </span>
             </div>
           );

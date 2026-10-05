@@ -103,6 +103,29 @@ async function main() {
     await stores.updateMany(scopeFilter, { $set: { "posIntegration.scopes": DEFAULT_SCOPES } });
   }
 
+  // 6. 포스 단말기 이름 — 예전엔 전부 "POS"였다. 매장별로 등록 순서대로 POS001, POS002…로 바꾼다(이미 POS+숫자 3자리 이상인 이름은 그대로).
+  const terminals = mongoose.connection.collection("posterminals");
+  const named = /^POS\d{3,}$/;
+  const storeIds = await terminals.distinct("storeId");
+  let renamed = 0;
+  for (const sid of storeIds) {
+    const list = await terminals.find({ storeId: sid }).sort({ registeredAt: 1, _id: 1 }).toArray();
+    let max = 0;
+    for (const t of list) {
+      const m = /^POS(\d{3,})$/.exec(String(t.name));
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    for (const t of list) {
+      if (named.test(String(t.name))) continue;
+      max += 1;
+      const newName = `POS${String(max).padStart(3, "0")}`;
+      renamed++;
+      console.log(`포스 단말기 ${t._id} '${t.name}' → '${newName}'`);
+      if (APPLY) await terminals.updateOne({ _id: t._id }, { $set: { name: newName } });
+    }
+  }
+  console.log(`이름을 바꿀 포스 단말기: ${renamed}대`);
+
   await mongoose.disconnect();
   console.log("완료");
 }

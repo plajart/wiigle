@@ -121,7 +121,7 @@ function Save-Config($cfg) { $cfg | ConvertTo-Json | Out-File -Encoding UTF8 $Co
 $ProvisionPath = "$PSScriptRoot\provision.json"
 
 function Register-Terminal {
-    $name = $env:COMPUTERNAME  # 단말 이름은 묻지 않고 컴퓨터 이름을 그대로 쓴다
+    $name = $env:COMPUTERNAME  # 서버가 등록 순서대로 POS001, POS002… 이름을 정해 돌려준다(아래). 매장 관리모드에서 바꿀 수 있다.
     if (-not (Test-Path $ProvisionPath)) {
         Write-Host "설치 정보(provision.json)가 없습니다. 포인트 관리 홈페이지의 매장 관리모드에서 포스기를 다시 다운로드해 새로 설치해주세요." -ForegroundColor Red
         exit 1
@@ -137,6 +137,7 @@ function Register-Terminal {
         Write-Host "이미 사용했거나 24시간이 지난 설치 파일일 수 있습니다. 홈페이지에서 포스기를 다시 다운로드해주세요." -ForegroundColor Yellow
         exit 1
     }
+    if ($res.terminalName) { $name = $res.terminalName }
     $cfg = @{ terminalId = $res.terminalId; apiKey = $res.apiKey; name = $name; baseUrl = $Script:BaseUrl; isPrimary = [bool]$res.isPrimary; storeName = $res.storeName }
     Save-Config $cfg
     Remove-Item $ProvisionPath -Force -ErrorAction SilentlyContinue
@@ -444,6 +445,7 @@ $Script:IsPrimary = [bool]$cfg.isPrimary
 $Script:LastError = $null
 $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
+$Script:RetryError = $null
 function Set-AgentError([string]$msg) {
     $Script:LastError = $msg
     $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
@@ -454,9 +456,10 @@ function Send-Heartbeat {
     try {
         $pending = 0
         try { $pending = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
-        $status = @{ pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $Script:LastError; lastErrorAt = $Script:LastErrorAt }
+        $status = @{ pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt }
         $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes(($status | ConvertTo-Json -Compress)))
         $Script:IsPrimary = [bool]$res.isPrimary
+        if ($res.terminalName -and $res.terminalName -ne $cfg.name) { $cfg.name = $res.terminalName; try { $trayIcon.Text = "포인트 관리 프로그램 — $($cfg.name)" } catch { } }
         if ($res.storeUrl) { Set-ManageShortcut -isPrimary $Script:IsPrimary -storeUrl $res.storeUrl }
         return $true
     } catch {
@@ -469,6 +472,14 @@ function Send-Heartbeat {
 # ─── 사용(REDEEM) 팝업 — 스왑 대기 목록: MEM_NO -> {original=원래 로컬값, at=스왑 시각} ──
 
 $Script:SwapPending = @{}
+
+# 포스DB 안에서 일어난 포인트 이동·건너뜀을 서버 장부에 남긴다(문제 발생 시 추적용). 실패해도(인터넷 끊김 등) 본 처리에는 영향 없다.
+function Send-TransferLog([string]$kind, [string]$phone, $amount, $localBefore, $localAfter, [string]$note, [string]$txn) {
+    try {
+        $b = @{ kind = $kind; phone = $phone; amount = $amount; localBefore = $localBefore; localAfter = $localAfter; note = $note; vendorTxnId = $txn }
+        Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/transfer-log" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -TimeoutSec 5 -Body ([System.Text.Encoding]::UTF8.GetBytes(($b | ConvertTo-Json -Compress))) | Out-Null
+    } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 이동 기록 전송 실패(무시): $_" }
+}
 
 function Show-RedeemPopup {
     $form = New-Object System.Windows.Forms.Form
@@ -491,7 +502,23 @@ function Show-RedeemPopup {
         } catch {
             # 같은 손님을 다른 포스기에서 이미 조회 중이면 서버가 409로 거부한다(이중사용 방지, 2026-09-28).
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 사용 조회 실패: $_"
-            $lblResult.Text = Get-FriendlyError $_
+            $lookupErr = $_
+            $lookupCode = $null; $lookupHolder = $null
+            try { $eb = $lookupErr.ErrorDetails.Message | ConvertFrom-Json; $lookupCode = $eb.error; $lookupHolder = $eb.holder } catch { }
+            $lookupStatus = 0
+            try { $lookupStatus = [int]$lookupErr.Exception.Response.StatusCode } catch { }
+            if ($lookupCode -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
+                # 같은 손님을 다른 포스기에서 사용 조회 중 — 어디서 쓰는 중인지 보여주고, 이번에는 적립만 가능하다고 안내한다(적립은 그대로 진행됨).
+                $where = ""
+                if ($lookupHolder) { $where = "$($lookupHolder.companyName) / $($lookupHolder.storeName) ($($lookupHolder.terminalName))" }
+                $busyMsg = "이 손님은 지금 다른 곳에서 포인트를 사용 중입니다.`n`n사용 중: $where`n`n현재는 [적립만] 가능합니다. 적립은 그대로 진행됩니다.`n포인트 사용(차감)은 정확한 잔액 확인이 어려워 진행하지 않습니다.`n잠시 후 다시 조회하면 사용할 수 있습니다."
+                $lblResult.Text = "다른 곳에서 사용 중 — 현재 적립만 가능합니다."
+                [System.Windows.Forms.MessageBox]::Show($busyMsg, "포인트 관리 프로그램", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            } elseif ($lookupStatus -eq 0) {
+                $lblResult.Text = "인터넷이 끊겨 서버 포인트를 확인할 수 없습니다.`n포스에 저장된 포인트만 사용 가능하고, 적립은 정상 진행되어 연결되면 서버로 옮겨집니다."
+            } else {
+                $lblResult.Text = Get-FriendlyError $lookupErr
+            }
             return
         }
         try {
@@ -508,6 +535,8 @@ function Show-RedeemPopup {
         $newLocal = $localBefore + [double]$res.availableBalance
         Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
         $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = [double]$res.availableBalance; at = Get-Date; phone = $phone }
+        Send-TransferLog "LOOKUP_TO_POS" $phone ([double]$res.availableBalance) $localBefore $newLocal "사용 조회: 서버 포인트를 포스 화면에 더함" ""
+
         $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 더했습니다(화면 표시 $([int]$newLocal)원).`n계산원님, 챔프에서 포인트결제를 진행하세요."
         } catch {
             # 챔프(포스DB) 조회·수정이 실패한 경우 — 화면이 멈추거나 오류창이 뜨지 않고 안내만 보여준다.
@@ -543,8 +572,12 @@ function Restore-SwappedIfDone($memNo) {
     # 초기화 이후 스테디스테이트: 거래가 없을 때 포스DB 잔액은 항상 0이어야 한다(서버가
     # 유일한 진실). 예전엔 스왑 전 값(entry.original)으로 되돌렸지만, 초기화 이후에는 그
     # 원래값도 사실 0이었어야 하므로 0으로 되돌린다(2026-09-28).
+    $swapInfo = $Script:SwapPending[$memNo]
+    $curLocal = $null
+    try { $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"; if ($cur.Count -gt 0) { $curLocal = [double]$cur[0].MEM_USABLE_PNT } } catch { }
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending.Remove($memNo)
+    Send-TransferLog "RESTORE_POS" "$($swapInfo.phone)" 0 $curLocal 0 "결제 후/대기 종료: 포스 잔액을 0으로 되돌림(서버가 원본)" ""
 }
 
 function Restore-TimedOutSwaps {
@@ -558,22 +591,42 @@ function Restore-TimedOutSwaps {
 }
 
 function Process-Queue {
-    $rows = Champ-Query "SELECT CRAB_SEQ, MEM_NO, MEMP_AMT, MEMP_ADD_AMT, MEMP_USED_AMT, MEMP_CARD_NO, SRC_SELLS_DT, SRC_CHN_NO FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' ORDER BY CRAB_SEQ"
+    $rows = Champ-Query "SELECT CRAB_SEQ, MEM_NO, MEMP_AMT, MEMP_ADD_AMT, MEMP_USED_AMT, MEMP_CARD_NO, SRC_SELLS_DT, SRC_CHN_NO, CREATED_AT FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' ORDER BY CRAB_SEQ"
+    $passFailed = $false
     foreach ($r in $rows) {
         $memNo = $r.MEM_NO
         $vendorTxnKey = "$($cfg.terminalId)-$($r.CRAB_SEQ)"
+        # 결제가 실제로 일어난 시각(인터넷이 끊겼다 나중에 반영돼도 원래 시각이 기록되게)
+        $occurredIso = $null
+        try { if ($r.CREATED_AT) { $occurredIso = ([datetime]$r.CREATED_AT).ToUniversalTime().ToString("o") } } catch { }
         try {
             $member = Champ-Query "SELECT MEM_TEL_1, MEM_REP_TEL FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
             $phone = $null
             if ($member.Count -gt 0) { $phone = Resolve-MemberPhone $member[0].MEM_REP_TEL $member[0].MEM_TEL_1 }
 
             if ($phone) {
+                if ([double]$r.MEMP_ADD_AMT -lt 0) {
+                    # 결제 취소로 포스가 적립을 되돌린 건 — 직원이 직접 차감하지 않아도 서버 포인트를 자동으로 되돌린다.
+                    Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/earn" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes((@{
+                        phone = $phone; addAmount = [double]$r.MEMP_ADD_AMT; saleAmount = [double]$r.MEMP_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "EARNCANCEL-$vendorTxnKey"; occurredAt = $occurredIso
+                    } | ConvertTo-Json))) | Out-Null
+                    Show-ResultToast "결제 취소 반영`n적립 $([int](-[double]$r.MEMP_ADD_AMT))원 취소"
+                    # 포스 로컬 잔액은 0이 정상 — 취소로 어긋난 값을 0으로 맞춘다(사용 조회 중인 손님은 건드리지 않음).
+                    if (-not $Script:SwapPending.ContainsKey($memNo)) { Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)" }
+                }
+                if ([double]$r.MEMP_USED_AMT -lt 0) {
+                    Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes((@{
+                        action = "cancel"; phone = $phone; refundAmount = (-[double]$r.MEMP_USED_AMT); cardNo = $r.MEMP_CARD_NO; vendorTxnId = "USECANCEL-$vendorTxnKey"; occurredAt = $occurredIso
+                    } | ConvertTo-Json))) | Out-Null
+                    Show-ResultToast "결제 취소 반영`n사용 $([int](-[double]$r.MEMP_USED_AMT))원 환원"
+                    if (-not $Script:SwapPending.ContainsKey($memNo)) { Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)" }
+                }
                 if ([double]$r.MEMP_ADD_AMT -gt 0) {
                     # 챔프 자체 포인트 기능(자동 적립이든 계산원 수기 입력이든 MEMBER_POINT에
                     # 똑같이 기록됨)이 이미 계산해둔 적립액(MEMP_ADD_AMT)을 그대로 서버에 반영한다
                     # — 서버가 별도 요율로 재계산하지 않는다(2026-09-28).
                     $earnRes = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/earn" -Headers $AuthHeader -ContentType "application/json" -Body (@{
-                        phone = $phone; addAmount = [double]$r.MEMP_ADD_AMT; saleAmount = [double]$r.MEMP_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "EARN-$vendorTxnKey"
+                        phone = $phone; addAmount = [double]$r.MEMP_ADD_AMT; saleAmount = [double]$r.MEMP_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "EARN-$vendorTxnKey"; occurredAt = $occurredIso
                     } | ConvertTo-Json)
                     if ([double]$earnRes.earnAmount -gt 0) {
                         Show-ResultToast "적립 완료`n$([int]$earnRes.earnAmount)원 적립`n잔액 $([int]$earnRes.availableBalance)원"
@@ -587,13 +640,14 @@ function Process-Queue {
                 }
                 if ([double]$r.MEMP_USED_AMT -gt 0) {
                     Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{
-                        action = "apply"; phone = $phone; usedAmount = [double]$r.MEMP_USED_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "USE-$vendorTxnKey"
+                        action = "apply"; phone = $phone; usedAmount = [double]$r.MEMP_USED_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "USE-$vendorTxnKey"; occurredAt = $occurredIso
                     } | ConvertTo-Json) | Out-Null
                 }
             } else {
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 전화번호 미등록 — 적립 건너뜀(보관)"
                 # 'Y'가 아니라 'S'(전화번호 없어 건너뜀)로 남겨 나중에 번호가 등록되면 사후 처리할 수 있게 한다.
                 $Script:SkippedNoPhone++
+                Send-TransferLog "SKIPPED" "" ([double]$r.MEMP_ADD_AMT) $null $null "전화번호 없음 — 서버 반영 보류(MEM_NO=$memNo)" "SKIP-$vendorTxnKey"
                 Set-AgentError "전화번호가 없는 회원($memNo)의 적립을 서버에 반영하지 못했습니다(보관됨)."
                 Restore-SwappedIfDone $memNo
                 Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='S' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
@@ -610,6 +664,7 @@ function Process-Queue {
                 # 서버가 "이 데이터는 처리할 수 없다"고 확정한 경우(잘못된 값) — 계속 재시도하면 같은 오류만 반복되므로 건너뛴다.
                 # 포스 잔액은 건드리지 않는다(서버에 반영되지 않은 건이므로 그대로 둔다).
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 항목 건너뜀(서버가 거부, CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Yellow
+                Send-TransferLog "REJECTED" "$phone" ([double]$r.MEMP_ADD_AMT) $null $null "서버 거부로 건너뜀: $(Get-FriendlyError $qerr)" "REJ-$vendorTxnKey"
                 Set-AgentError "적립·사용 1건을 서버가 거부해 건너뜀(CRAB_SEQ=$($r.CRAB_SEQ)): $(Get-FriendlyError $qerr)"
                 try {
                     Restore-SwappedIfDone $memNo
@@ -617,11 +672,12 @@ function Process-Queue {
                 } catch { }
             } else {
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 처리 실패(CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Red
-                $Script:LastError = "큐 처리 실패(재시도 중): $(Get-FriendlyError $qerr)"; $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
+                $Script:RetryError = "큐 처리 실패(재시도 중, 인터넷 연결 확인): $(Get-FriendlyError $qerr)"; $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o"); $passFailed = $true
                 # 일시적인 실패(인터넷 끊김 등)는 PROCESSED='Y'로 안 바꿔서 다음 순회에 재시도(멱등키가 있어 서버 쪽 중복 반영은 안 됨)
             }
         }
     }
+    if (-not $passFailed) { $Script:RetryError = $null }  # 이번 순회에서 막힌 건이 없으면 "재시도 중" 오류 표시를 지운다
     Restore-TimedOutSwaps
 }
 

@@ -16,6 +16,7 @@ type ByTerminal = { terminalId: string; name: string; earned: number; used: numb
 type Settlement = { date: string; totalEarned: number; totalUsed: number; count: number; byTerminal: ByTerminal[]; detail: Detail[] };
 
 const EARN_TYPES = new Set(["EARN", "VENDOR_EARN", "VENDOR_IMPORT", "GRANT", "ADJUST"]);
+const CANCEL_LABEL: Record<string, string> = { EARN_CANCEL: "적립 취소", USE_CANCEL: "사용 취소" };
 
 function todayKst(): string {
   // 서버가 KST 기준으로 하루를 자르므로, 날짜 선택 기본값도 KST 오늘로 맞춘다.
@@ -102,7 +103,7 @@ export default function SettlementClient({ storeId }: { storeId: string }) {
               <div className="row" key={d._id}>
                 <span>
                   <span className={"badge " + (EARN_TYPES.has(d.type) ? "success" : "neutral")}>
-                    {EARN_TYPES.has(d.type) ? "적립" : "사용"}
+                    {CANCEL_LABEL[d.type] ?? (EARN_TYPES.has(d.type) ? "적립" : "사용")}
                   </span>{" "}
                   <span className="value">{d.amount.toLocaleString()}원</span>
                   <div className="faint" style={{ marginTop: 4 }}>

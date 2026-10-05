@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { posAgentRedeemLookup, posAgentRedeemApply } from "@/lib/points";
+import { posAgentRedeemLookup, posAgentRedeemApply, posAgentRedeemCancel, RedeemBusyError } from "@/lib/points";
 import { handleApiError, requireAgentTerminal } from "@/lib/api-utils";
 
 // 사용(REDEEM) 팝업이 호출 — 전화번호로 조회(GET 성격이지만 인증 헤더 때문에 POST로 통일)한다.
@@ -20,8 +20,16 @@ export async function POST(req: Request) {
     if (!phone) return NextResponse.json({ error: "PHONE_REQUIRED" }, { status: 400 });
 
     if (body.action === "lookup") {
-      const result = await posAgentRedeemLookup(storeId, terminalId, phone);
-      return NextResponse.json({ ok: true, ...result });
+      try {
+        const result = await posAgentRedeemLookup(storeId, terminalId, phone);
+        return NextResponse.json({ ok: true, ...result });
+      } catch (e) {
+        // 다른 포스기가 이 손님을 사용 조회 중 — 어디서 쓰는 중인지 알려준다(이 경우 포스에서는 적립만 가능).
+        if (e instanceof RedeemBusyError) {
+          return NextResponse.json({ error: "REDEEM_IN_PROGRESS_ELSEWHERE", holder: e.holder }, { status: 409 });
+        }
+        throw e;
+      }
     }
     if (body.action === "apply") {
       const usedAmount = Number(body.usedAmount);
@@ -29,7 +37,16 @@ export async function POST(req: Request) {
       const vendorTxnId: string = body.vendorTxnId;
       if (!vendorTxnId) return NextResponse.json({ error: "VENDOR_TXN_ID_REQUIRED" }, { status: 400 });
       if (!Number.isFinite(usedAmount) || usedAmount <= 0) return NextResponse.json({ error: "INVALID_AMOUNT" }, { status: 400 });
-      const result = await posAgentRedeemApply({ storeId, terminalId, phone, usedAmount, cardNo, vendorTxnId });
+      const occurredAt: string | undefined = typeof body.occurredAt === "string" ? body.occurredAt : undefined;
+      const result = await posAgentRedeemApply({ storeId, terminalId, phone, usedAmount, cardNo, vendorTxnId, occurredAt });
+      return NextResponse.json({ ok: true, ...result });
+    }
+    if (body.action === "cancel") {
+      const refundAmount = Number(body.refundAmount);
+      const vendorTxnId: string = body.vendorTxnId;
+      if (!vendorTxnId) return NextResponse.json({ error: "VENDOR_TXN_ID_REQUIRED" }, { status: 400 });
+      if (!Number.isFinite(refundAmount) || refundAmount <= 0) return NextResponse.json({ error: "INVALID_AMOUNT" }, { status: 400 });
+      const result = await posAgentRedeemCancel({ storeId, terminalId, phone, refundAmount, cardNo: body.cardNo || undefined, vendorTxnId, occurredAt: typeof body.occurredAt === "string" ? body.occurredAt : undefined });
       return NextResponse.json({ ok: true, ...result });
     }
     return NextResponse.json({ error: "INVALID_ACTION" }, { status: 400 });

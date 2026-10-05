@@ -1,70 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-
-type Terminal = {
-  _id: string;
-  name: string;
-  status: "ACTIVE" | "REVOKED";
-  registeredAt: string;
-  lastSeenAt: string | null;
-  online: boolean;
-  isPrimary: boolean;
-  agentStatus?: { pending: number; skippedNoPhone: number; lastError?: string | null; lastErrorAt?: string | null } | null;
-};
-
-type Activity = { _id: string; type: string; isEarn: boolean; amount: number; occurredAt: string; cardNo: string | null };
-
+// 포스기 다운로드 — 포스 단말기 목록 관리는 매장 대시보드로 옮겼다.
 export default function TerminalsClient({ storeId }: { storeId: string }) {
-  const [terminals, setTerminals] = useState<Terminal[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [detailFor, setDetailFor] = useState<string | null>(null);
-  const [detail, setDetail] = useState<Activity[] | null>(null);
-
-  const load = useCallback(async () => {
-    const res = await fetch(`/api/v1/stores/${storeId}/pos-terminals`);
-    const data = await res.json();
-    setTerminals(data.terminals ?? []);
-  }, [storeId]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 15000); // 온라인 상태 자동 갱신
-    return () => clearInterval(t);
-  }, [load]);
-
-  async function revoke(terminalId: string) {
-    if (!window.confirm("이 POS 터미널의 연결을 해지할까요? 해지 후에는 포스 프로그램을 다시 다운로드해 설치해야 합니다.")) return;
-    await fetch(`/api/v1/stores/${storeId}/pos-terminals/${terminalId}`, { method: "DELETE" });
-    load();
-  }
-
-  async function setPrimary(terminalId: string) {
-    setBusy(true);
-    try {
-      await fetch(`/api/v1/stores/${storeId}/pos-terminals`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ terminalId }),
-      });
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function toggleDetail(terminalId: string) {
-    if (detailFor === terminalId) {
-      setDetailFor(null);
-      return;
-    }
-    setDetailFor(terminalId);
-    setDetail(null);
-    const res = await fetch(`/api/v1/stores/${storeId}/pos-terminals/${terminalId}/recent-activity`);
-    const data = await res.json();
-    setDetail(res.ok ? data.events : []);
-  }
-
   return (
     <div>
       <div className="page-header">
@@ -96,72 +33,7 @@ export default function TerminalsClient({ storeId }: { storeId: string }) {
         </button>
       </div>
 
-      <h2>등록된 POS 터미널</h2>
-      <div className="card">
-        {terminals === null && <p className="muted">불러오는 중...</p>}
-        {terminals?.filter((t) => t.status === "ACTIVE").length === 0 && (
-          <div className="empty-state">
-            <div className="ic">◎</div>
-            아직 등록된 POS 터미널이 없습니다
-          </div>
-        )}
-        {terminals
-          ?.filter((t) => t.status === "ACTIVE")
-          .map((t) => (
-            <div key={t._id}>
-              <div className="row">
-                <span>
-                  <span className="value">
-                    {t.name} {t.isPrimary && <span className="badge" style={{ marginLeft: 6 }}>대표</span>}
-                  </span>
-                  <div className="faint" style={{ marginTop: 4 }}>
-                    등록 {new Date(t.registeredAt).toLocaleDateString("ko-KR")} ·{" "}
-                    {t.lastSeenAt ? `최근 응답 ${new Date(t.lastSeenAt).toLocaleTimeString("ko-KR")}` : "응답 기록 없음"}
-                  </div>
-                  {t.agentStatus && (t.agentStatus.pending > 0 || t.agentStatus.skippedNoPhone > 0 || t.agentStatus.lastError) && (
-                    <div className="error" style={{ marginTop: 4 }}>
-                      {t.agentStatus.pending > 0 && <>서버에 아직 못 보낸 적립·사용 {t.agentStatus.pending}건 · </>}
-                      {t.agentStatus.skippedNoPhone > 0 && <>전화번호가 없어 보류된 {t.agentStatus.skippedNoPhone}건 · </>}
-                      {t.agentStatus.lastError && <>최근 오류: {t.agentStatus.lastError}{t.agentStatus.lastErrorAt ? ` (${new Date(t.agentStatus.lastErrorAt).toLocaleString("ko-KR")})` : ""}</>}
-                    </div>
-                  )}
-                </span>
-                <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span className={"badge " + (t.online ? "success" : "neutral")}>{t.online ? "가동중" : "오프라인"}</span>
-                  <button type="button" className="sm ghost" onClick={() => toggleDetail(t._id)}>
-                    {detailFor === t._id ? "닫기" : "상세보기"}
-                  </button>
-                  {!t.isPrimary && (
-                    <button type="button" className="sm ghost" disabled={busy} onClick={() => setPrimary(t._id)}>
-                      대표로 지정
-                    </button>
-                  )}
-                  <button type="button" className="sm ghost" onClick={() => revoke(t._id)}>
-                    해지
-                  </button>
-                </span>
-              </div>
-              {detailFor === t._id && (
-                <div style={{ padding: "0 4px 14px 4px" }}>
-                  {detail === null && <p className="muted">불러오는 중...</p>}
-                  {detail?.length === 0 && <p className="faint" style={{ margin: 0 }}>이 단말의 최근 내역이 없습니다.</p>}
-                  {detail?.map((d) => (
-                    <div className="row" key={d._id} style={{ paddingLeft: 12 }}>
-                      <span>
-                        <span className={"badge " + (d.isEarn ? "success" : "neutral")}>{d.isEarn ? "적립" : "사용"}</span>{" "}
-                        <span className="value">{d.amount.toLocaleString()}원</span>
-                      </span>
-                      <span className="faint">
-                        {new Date(d.occurredAt).toLocaleString("ko-KR")}
-                        {d.cardNo ? ` · 카드 ${d.cardNo}` : ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-      </div>
+      <p className="faint">등록된 포스 단말기 목록·이름 변경·대표 지정·해지는 <a href="/store">대시보드</a>에서 합니다.</p>
     </div>
   );
 }

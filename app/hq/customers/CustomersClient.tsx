@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import ResetPasswordForm from "../../components/ResetPasswordForm";
+import { useRealtime } from "../../components/useRealtime";
 
 type CustomerInfo = { customerId: string; name: string; phone: string; total: number };
 type EventItem = {
@@ -51,6 +52,22 @@ export default function CustomersClient() {
       setLoading(false);
     }
   }
+
+  // 조회해 둔 고객의 포인트가 바뀌면(매장에서 적립·사용) 새로고침 없이 다시 불러온다.
+  useRealtime(async () => {
+    if (!customer) return;
+    try {
+      const res = await fetch(`/api/v1/hq/customers/search?phone=${encodeURIComponent(customer.phone)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setCustomer(data);
+      const evRes = await fetch(`/api/v1/hq/customers/${data.customerId}/usage`);
+      const evData = await evRes.json();
+      setEvents(evData.events ?? []);
+    } catch {
+      // 다음 신호 때 다시 시도
+    }
+  });
 
   return (
     <div>
