@@ -49,7 +49,7 @@ try {
 }
 
 # 5) 이 PC의 설정 파일 삭제(다시 설치하면 새로 등록된다). 백업 CSV(바탕화면)와 실행 기록(agent.log)은 남긴다.
-foreach ($f in @("terminal-config.json", "bulk-import-done.json", "provision.json")) {
+foreach ($f in @("terminal-config.json", "bulk-import-done.json", "provision.json", "transfer-pending-batch.txt", "transfer-last.json", "bundle-version.txt")) {
     Remove-Item (Join-Path $PSScriptRoot $f) -Force -ErrorAction SilentlyContinue
 }
 
@@ -59,12 +59,12 @@ Write-Host "※ 홈페이지 매장 관리모드 > '포스기 다운로드' 화�
 Write-Host "※ 이 폴더는 직접 삭제하셔도 됩니다."
 
 # 6) 예전 방식으로 돌아가려면 포인트 복구
-$backup = Get-ChildItem -Path ([Environment]::GetFolderPath('Desktop')) -Filter "포인트초기화백업_*.csv" -ErrorAction SilentlyContinue | Select-Object -First 1
+$backup = @(Get-ChildItem -Path ([Environment]::GetFolderPath('Desktop')) -Filter "포인트서버이전백업_*.csv" -ErrorAction SilentlyContinue) + @(Get-ChildItem -Path ([Environment]::GetFolderPath('Desktop')) -Filter "포인트초기화백업_*.csv" -ErrorAction SilentlyContinue) | Select-Object -First 1
 if ($backup) {
     Write-Host ""
-    Write-Host "바탕화면에 초기화 이전 포인트 백업 파일이 있습니다." -ForegroundColor Cyan
+    Write-Host "바탕화면에 포인트 이전 전 백업 파일이 있습니다." -ForegroundColor Cyan
     Write-Host "예전 방식(포스 자체 포인트)으로 돌아가려면 지금 복구하세요. 복구하면 예전 포인트가 포스에 다시 생기며, 백업 이후의 적립·사용은 반영되지 않습니다."
-    if ((Read-Host "포스 포인트를 초기화 이전 값으로 복구할까요? (yes 입력, 아니면 그냥 Enter)") -eq "yes") {
+    if ((Read-Host "포스 포인트를 이전 전 값으로 복구할까요? (yes 입력, 아니면 그냥 Enter)") -eq "yes") {
         & (Join-Path $PSScriptRoot "restore-bulk-import-backup.ps1")
     } else {
         Write-Host "복구하지 않았습니다. 나중에 필요하면 restore.bat 을 실행하세요."

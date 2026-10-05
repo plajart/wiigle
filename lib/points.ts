@@ -884,7 +884,8 @@ export type BulkImportResult = {
 export async function bulkImportLegacyBalances(
   storeId: string,
   terminalId: string,
-  entries: BulkImportEntry[]
+  entries: BulkImportEntry[],
+  batchId?: string
 ): Promise<BulkImportResult> {
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
@@ -913,26 +914,44 @@ export async function bulkImportLegacyBalances(
     const customerId = String(user._id);
     // 이 포스기에서 이 고객 몫을 이미 가져왔으면 스킵(포스기 단위 — 같은 매장의 다른
     // 포스기에서 이미 실적립·다른 초기화가 있었어도 이 포스기 몫은 별도로 더해야 함).
-    const canImport = await claimVendorImport(storeId, terminalId, customerId, balance, "BULK");
-    if (!canImport) {
+    // batchId가 있으면(새 프로그램) 몇 번을 다시 실행해도 안전한 방식: (포스기, 이전 묶음, 전화번호, 금액)이 같은 요청은 한 번만 반영된다 —
+    // 응답이 끊겨 같은 요청을 다시 보내도 중복 적립되지 않고, 이후에 새로 쌓인 잔액은 다른 묶음으로 정상 반영된다.
+    // batchId가 없으면(옛 프로그램) 예전처럼 포스기·고객당 1회만 가져온다.
+    const importTxnId = batchId ? `IMPORT-${terminalId}-${batchId}-${phone}-${balance}` : undefined;
+    if (!importTxnId) {
+      const canImport = await claimVendorImport(storeId, terminalId, customerId, balance, "BULK");
+      if (!canImport) {
+        alreadyLinked++;
+        continue;
+      }
+    } else if (await PointEvent.exists({ storeId, vendorTxnId: importTxnId })) {
       alreadyLinked++;
       continue;
     }
+    try {
+      await PointEvent.create({
+        userId: customerId,
+        companyId,
+        storeId,
+        terminalId,
+        cardNo,
+        type: "VENDOR_IMPORT",
+        amount: balance,
+        status: "CONFIRMED",
+        vendorTxnId: importTxnId,
+        recordedAt: new Date(),
+        reason: `포스 포인트 서버 이전 (terminal ${terminalId}${batchId ? `, 묶음 ${batchId}` : ""})`,
+      });
+    } catch (e) {
+      if ((e as { code?: number }).code === 11000) {
+        alreadyLinked++; // 동시에 같은 요청이 들어온 경우
+        continue;
+      }
+      throw e;
+    }
     const account = await getOrCreateAccount(customerId, storeId, "STORE", companyId);
     await atomicCredit(account._id, balance);
-    await PointEvent.create({
-      userId: customerId,
-      companyId,
-      storeId,
-      terminalId,
-      cardNo,
-      type: "VENDOR_IMPORT",
-      amount: balance,
-      status: "CONFIRMED",
-      recordedAt: new Date(),
-      reason: `포스기 초기화 일괄 이전 (terminal ${terminalId})`,
-    });
-    await logPosTransfer({ storeId, terminalId, userId: customerId, phone, kind: "BULK_IMPORT", direction: "POS_TO_SERVER", amount: balance, note: "포스기 초기 설치 일괄 이전" });
+    await logPosTransfer({ storeId, terminalId, userId: customerId, phone, kind: "BULK_IMPORT", direction: "POS_TO_SERVER", amount: balance, note: "포스 포인트 서버 이전" });
     publishPointChange({ companyId, storeId, userId: customerId }, "BULK_IMPORT");
     await AuditLog.create({
       storeId,

@@ -15,7 +15,7 @@
 #
 # 설치·최초 실행 안내(계산원용): 매장 관리자가 카운터 PC의 브라우저에서 홈페이지에 로그인해 매장
 # 관리모드의 "포스기 다운로드"를 누르면, 그 매장 전용 설치 정보가 담긴 압축파일이 받아집니다.
-# 압축을 (지워지지 않는 폴더에) 풀고 "start.bat"을 더블클릭하면 인증코드 입력 없이 설치·등록·초기화가
+# 압축을 (지워지지 않는 폴더에) 풀고 "start.bat"을 더블클릭하면(또는 PointManager-Setup.exe 실행) 인증코드 입력 없이 설치·등록이
 # 자동으로 끝나고, 이 매장의 포스기 목록이 창으로 표시됩니다(매장의 첫 단말은 자동으로 대표 포스기).
 # 이후 컴퓨터를 켤 때마다 자동으로 시작됩니다. 챔프 DB 준비도 전부 자동입니다.
 #
@@ -129,6 +129,15 @@ function Register-Terminal {
     $prov = Get-Content $ProvisionPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($prov.baseUrl) { $Script:BaseUrl = $prov.baseUrl }
 
+    # 어느 고객사·매장에 등록되는지 보여주고 확인받는다 — 잘못된 매장이면 등록하지 않는다(설치 정보도 소모되지 않는다).
+    $where = "$($prov.storeName)"
+    if ($prov.companyName) { $where = "$($prov.companyName) › $($prov.storeName)" }
+    $ans = [System.Windows.Forms.MessageBox]::Show("이 컴퓨터를 아래 매장의 포스기로 등록합니다.`n`n  $where`n`n맞으면 [예]를 눌러주세요. 매장이 다르면 [아니오]를 누르고, 올바른 매장 화면에서 설치 파일을 다시 받아주세요.", "포인트 관리 프로그램 - 포스기 등록", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) {
+        Write-Host "등록을 취소했습니다." -ForegroundColor Yellow
+        exit 1
+    }
+
     try {
         $body = @{ token = $prov.token; terminalName = $name } | ConvertTo-Json
         $res = Invoke-RestMethod -Method Post -Uri "$Script:BaseUrl/api/v1/pos/agent/register" -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
@@ -138,10 +147,10 @@ function Register-Terminal {
         exit 1
     }
     if ($res.terminalName) { $name = $res.terminalName }
-    $cfg = @{ terminalId = $res.terminalId; apiKey = $res.apiKey; name = $name; baseUrl = $Script:BaseUrl; isPrimary = [bool]$res.isPrimary; storeName = $res.storeName }
+    $cfg = @{ terminalId = $res.terminalId; apiKey = $res.apiKey; name = $name; baseUrl = $Script:BaseUrl; isPrimary = [bool]$res.isPrimary; storeName = $res.storeName; companyName = $res.companyName }
     Save-Config $cfg
     Remove-Item $ProvisionPath -Force -ErrorAction SilentlyContinue
-    Write-Host "등록 완료 — '$($res.storeName)' 매장의 포스기로 연결되었습니다." -ForegroundColor Green
+    Write-Host "등록 완료 — '$where' 매장의 포스기($name)로 연결되었습니다." -ForegroundColor Green
     return ($cfg | ConvertTo-Json | ConvertFrom-Json)
 }
 
@@ -327,12 +336,11 @@ function Sql-Str($s) { return "'" + ($s -replace "'", "''") + "'" }
 # ─── 매장 최초 설치 시 전화번호 있는 회원 전원의 잔액을 한 번에 서버로 이전 ──────────
 # 손님이 다시 올 때까지 기다리는 방문 시점 이전(posEarn의 1회성 수입)은 계속 살아있지만,
 # 이 포스기가 처음 설치될 때 이 일괄 이전이 필요하다. 포스기마다 로컬 DB가 따로라
-# 매장의 다른 포스기가 영업 중(실적립·다른 초기화 진행 중)이어도 이 포스기는 독립적으로,
+# 매장의 다른 포스기가 영업 중(실적립·다른 포인트 이전 진행 중)이어도 이 포스기는 독립적으로,
 # 대표 여부와 무관하게 실행된다. 이 포스기에서 딱 한 번만 실행되고(로컬 마커 파일),
 # 서버 쪽도 포스기 단위 멱등으로 이중 방지된다(같은 고객이 여러 포스기에 남긴 잔액은
 # 포스기별로 각각 더해짐 — 매장 계좌를 덮어쓰지 않음).
 
-$BulkImportMarkerPath = "$PSScriptRoot\bulk-import-done.json"
 
 # 포스DB에 포인트를 그대로 남겨두면(서버로도 옮기고 로컬에도 남아있으면) 나중에 두 값이
 # 어긋나 혼선이 생긴다(2026-09-28 결정) — 그래서 서버로 옮긴 뒤에는 로컬을 0으로 비운다.
@@ -344,7 +352,7 @@ function Export-PointBackupCsv($members, [string]$label) {
     $desktop = [Environment]::GetFolderPath('Desktop')
     $ts = (Get-Date).ToString('yyyyMMdd_HHmmss')
     $safeName = ($cfg.name -replace '[\\/:*?"<>|]', '_')
-    $path = Join-Path $desktop "포인트초기화백업_${safeName}_${label}_${ts}.csv"
+    $path = Join-Path $desktop "포인트서버이전백업_${safeName}_${label}_${ts}.csv"
     $esc = { param($v) '"' + ("$v" -replace '"', '""') + '"' }
     $lines = @('MEM_NO,MEM_NM,MEM_TEL_1,MEM_REP_TEL,MEM_CARD_NO,MEM_USABLE_PNT')
     foreach ($m in $members) {
@@ -355,66 +363,92 @@ function Export-PointBackupCsv($members, [string]$label) {
     return $path
 }
 
-function Invoke-InitialBulkImport {
-    if (Test-Path $BulkImportMarkerPath) { return }
+# 포인트 서버 이전 — 이 포스기에 남아 있는 모든 회원 포인트를 서버로 옮기고 포스 잔액을 0으로 만든다.
+# 처음 설치한 뒤 한 번 하는 것이 보통이지만, 몇 번을 다시 실행해도 안전하다(잔액이 있는 회원만 옮기고, 이미 0이면 할 일이 없다).
+# - 인터넷이 연결돼 있어야 한다(서버에서 확인).
+# - 서버에 아직 못 보낸 결제(큐)가 남아 있거나 사용 조회 중인 손님이 있으면 하지 않는다(그 잔액이 이중으로 옮겨지는 것을 막기 위해).
+# - 같은 요청이 다시 가도 서버가 한 번만 반영한다(묶음 번호+전화번호+금액이 같으면 중복 무시).
+$TransferBatchPath = "$PSScriptRoot\transfer-pending-batch.txt"
 
-    Write-Host "=== 최초 설치 확인: 기존 회원 포인트 일괄 이전을 시작합니다 ===" -ForegroundColor Cyan
+function Invoke-PointTransfer([bool]$interactive) {
+    $say = {
+        param($text, $icon)
+        Write-Host $text
+        if ($interactive) { [System.Windows.Forms.MessageBox]::Show($text, "포인트 서버 이전", [System.Windows.Forms.MessageBoxButtons]::OK, $icon) | Out-Null }
+    }
+    $info = [System.Windows.Forms.MessageBoxIcon]::Information
+    $warn = [System.Windows.Forms.MessageBoxIcon]::Warning
+
+    # 1) 인터넷(서버) 연결 확인 — 연결돼 있지 않으면 시작하지 않는다.
+    try { Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos/agent/terminals" -Headers $AuthHeader -TimeoutSec 10 | Out-Null }
+    catch { & $say "서버에 연결할 수 없어 포인트를 이전하지 않았습니다.`n인터넷 연결을 확인한 뒤 다시 실행해주세요.`n`n($(Get-FriendlyError $_))" $warn; return }
+
+    # 2) 서버에 아직 못 보낸 결제부터 처리 — 남아 있으면 중단(그 적립분이 포스 잔액에 섞여 있어 지금 옮기면 이중 반영된다).
+    if ($Script:SwapPending.Count -gt 0) { & $say "지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 실행해주세요." $warn; return }
+    try { Process-Queue } catch { Write-Host "큐 처리 오류: $_" -ForegroundColor Red }
+    $left = 0
+    try { $left = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+    if ($left -gt 0) { & $say "서버에 아직 반영되지 않은 결제가 $left 건 있어 포인트를 이전하지 않았습니다.`n인터넷 연결을 확인하고 잠시 뒤 다시 실행해주세요." $warn; return }
+
+    Write-Host "=== 포인트 서버 이전을 시작합니다 ===" -ForegroundColor Cyan
     $members = Champ-Query "SELECT MEM_NO, MEM_NM, MEM_TEL_1, MEM_REP_TEL, MEM_CARD_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_USABLE_PNT > 0"
+    if ($members.Count -eq 0) { & $say "이전할 포인트가 없습니다(모든 회원의 포스 잔액이 0입니다)." $info; return }
 
-    Export-PointBackupCsv $members "initial" | Out-Null
+    # 옮기기 전에 원본을 파일로 백업(문제가 생기면 restore.bat 으로 되돌릴 수 있다).
+    Export-PointBackupCsv $members "transfer" | Out-Null
 
     $withPhone = @()
     $noPhoneMembers = @()
     foreach ($m in $members) {
         $phone = Resolve-MemberPhone $m.MEM_REP_TEL $m.MEM_TEL_1
-        if ($phone) {
-            $withPhone += @{ memNo = $m.MEM_NO; phone = $phone; cardNo = $m.MEM_CARD_NO; balance = [double]$m.MEM_USABLE_PNT }
-        } else {
-            $noPhoneMembers += $m
-        }
+        if ($phone) { $withPhone += @{ memNo = $m.MEM_NO; phone = $phone; cardNo = $m.MEM_CARD_NO; balance = [double]$m.MEM_USABLE_PNT } }
+        else { $noPhoneMembers += $m }
+    }
+    Write-Host "전화번호 있는 회원 $($withPhone.Count)명 / 전화번호가 없어 옮길 수 없는 회원 $($noPhoneMembers.Count)명"
+
+    # 묶음 번호 — 같은 이전을 다시 시도하면 같은 번호를 쓴다(서버가 중복 반영하지 않게). 끝까지 성공하면 지운다.
+    $batchId = $null
+    if (Test-Path $TransferBatchPath) { try { $batchId = (Get-Content $TransferBatchPath -Raw).Trim() } catch { } }
+    if (-not $batchId -or $batchId -notmatch '^[A-Za-z0-9_-]{6,64}$') {
+        $batchId = (Get-Date).ToString("yyyyMMddHHmmss") + "-" + ([guid]::NewGuid().ToString("N").Substring(0, 6))
+        $batchId | Out-File -Encoding ASCII $TransferBatchPath
     }
 
-    Write-Host "전화번호 있는 회원 $($withPhone.Count)명 / 전화번호 없어 이번엔 못 옮기는 회원 $($noPhoneMembers.Count)명 (포인트 보유 회원 총 $($members.Count)명)"
-
-    # 전화번호 없는 회원 — 서버로 옮길 방법이 아직 없음(카드번호 기반 추후 병합은 별도 과제).
-    # 그래도 포스DB에 그대로 두면 다음에 또 걸려 혼선만 생기므로, 위에서 이미 백업했으니
-    # 영점화한다(복구가 필요하면 반드시 백업 파일로 수동 처리). 단, 서버 이전이 전부 성공한 뒤에 한다(아래).
-
-    $imported = 0; $alreadyLinked = 0; $skipped = 0; $totalAmount = 0; $failed = 0
+    $imported = 0; $already = 0; $skipped = 0; $totalAmount = 0; $failed = 0
     $batchSize = 200
     for ($i = 0; $i -lt $withPhone.Count; $i += $batchSize) {
         $batch = @($withPhone[$i..([Math]::Min($i + $batchSize - 1, $withPhone.Count - 1))])
         try {
-            # JSON을 직접 조립한다 — ConvertTo-Json은 1건짜리 배열을 객체로 직렬화해 서버가 400(ENTRIES_REQUIRED)을 돌려줬다.
+            # JSON을 직접 조립한다 — ConvertTo-Json은 1건짜리 배열을 객체로 직렬화한다.
             $items = @($batch | ForEach-Object { @{ phone = $_.phone; cardNo = $_.cardNo; balance = $_.balance } | ConvertTo-Json -Compress })
-            $json = '{"entries":[' + ($items -join ',') + ']}'
+            $json = '{"batchId":"' + $batchId + '","entries":[' + ($items -join ',') + ']}'
             $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
-            $imported += $res.imported; $alreadyLinked += $res.alreadyLinked; $skipped += $res.skippedInvalidPhone; $totalAmount += $res.totalAmount
-            # 서버 반영이 확인된 배치만 로컬을 0으로 — 백업은 이미 떠둔 상태라 안전.
+            $imported += $res.imported; $already += $res.alreadyLinked; $skipped += $res.skippedInvalidPhone; $totalAmount += $res.totalAmount
+            # 서버 반영이 확인된 회원만, 옮긴 금액만큼만 포스 잔액에서 뺀다(그 사이 새로 쌓인 잔액은 건드리지 않는다).
             foreach ($e in $batch) {
-                Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $e.memNo)"
+                $amt = [double]$e.balance
+                Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $amt < 0 THEN 0 ELSE MEM_USABLE_PNT - $amt END WHERE MEM_NO=$(Sql-Str $e.memNo)"
             }
         } catch {
-            Write-Host "일괄 이전 중 오류(이 배치는 로컬 값을 그대로 두고 다음 실행 때 재시도합니다): $_" -ForegroundColor Red
-            Set-AgentError "초기 이전 실패: $(Get-FriendlyError $_)"
+            Write-Host "포인트 이전 중 오류(이 묶음은 포스 잔액을 그대로 두고 다음 실행 때 다시 시도합니다): $_" -ForegroundColor Red
+            Set-AgentError "포인트 서버 이전 실패: $(Get-FriendlyError $_)"
             $failed++
         }
     }
 
-    # 전화번호가 없어 서버로 못 옮긴 회원은 서버 이전이 전부 끝난 뒤에만(백업은 이미 저장됨) 영점화한다.
+    # 전화번호가 없어 서버로 옮길 수 없는 회원 — 서버 이전이 전부 성공했을 때만(백업은 이미 저장됨) 0으로 비운다.
     if ($failed -eq 0) {
         foreach ($m in $noPhoneMembers) {
             Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $m.MEM_NO)"
         }
+        Remove-Item $TransferBatchPath -Force -ErrorAction SilentlyContinue
     }
-
-    $summary = @{ ranAt = (Get-Date).ToString("o"); memberCount = $members.Count; withPhone = $withPhone.Count; noPhone = $noPhoneMembers.Count; imported = $imported; alreadyLinked = $alreadyLinked; skippedInvalidPhone = $skipped; totalAmount = $totalAmount; failedBatches = $failed }
-    Write-Host "=== 일괄 이전 완료: 새로 이전 $imported 명 / 이미 있음 $alreadyLinked 명 / 합계 $totalAmount 원 (실패 배치 $failed) ===" -ForegroundColor Green
-    if ($failed -eq 0) {
-        $summary | ConvertTo-Json | Out-File -Encoding UTF8 $BulkImportMarkerPath
-    } else {
-        Write-Host "일부 배치가 실패해 완료 표시를 남기지 않았습니다 — 다음 실행 때 이어서 시도합니다(실패 배치 회원은 로컬 잔액이 남아있어 자동 재시도됨)." -ForegroundColor Yellow
-    }
+    $summary = @{ ranAt = (Get-Date).ToString("o"); memberCount = $members.Count; withPhone = $withPhone.Count; noPhone = $noPhoneMembers.Count; imported = $imported; alreadyApplied = $already; skippedInvalidPhone = $skipped; totalAmount = $totalAmount; failedBatches = $failed }
+    $summary | ConvertTo-Json | Out-File -Encoding UTF8 "$PSScriptRoot\transfer-last.json"
+    $resultText = "포인트 서버 이전 결과`n새로 이전 $imported 명 / 이미 반영됨 $already 명 / 합계 $totalAmount 포인트`n전화번호가 없어 옮기지 못한 회원 $($noPhoneMembers.Count)명 (실패 묶음 $failed)"
+    if ($failed -gt 0) { $resultText += "`n`n일부 묶음이 실패했습니다. 인터넷 연결을 확인하고 다시 실행하면 이어서 처리됩니다." }
+    Write-Host $resultText -ForegroundColor Green
+    & $say $resultText $(if ($failed -gt 0) { $warn } else { $info })
 }
 
 # ─── 대표 포스기 바탕화면 바로가기 ────────────────────────────────────────────
@@ -446,6 +480,7 @@ $Script:LastError = $null
 $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
 $Script:RetryError = $null
+$Script:ServerAgentVersion = $null
 function Set-AgentError([string]$msg) {
     $Script:LastError = $msg
     $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o")
@@ -459,6 +494,13 @@ function Send-Heartbeat {
         $status = @{ pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt }
         $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes(($status | ConvertTo-Json -Compress)))
         $Script:IsPrimary = [bool]$res.isPrimary
+        if ($res.storeName -and ($res.storeName -ne $cfg.storeName -or $res.companyName -ne $cfg.companyName)) {
+            # 이 포스기가 다른 매장으로 옮겨졌다 — 화면 표시를 맞추고 설정에 저장한다.
+            $cfg.storeName = $res.storeName; $cfg.companyName = $res.companyName
+            try { Save-Config $cfg } catch { }
+            try { Show-ResultToast "이 포스기가 이동되었습니다`n$($res.companyName) › $($res.storeName)" } catch { }
+        }
+        if ($res.agentVersion) { $Script:ServerAgentVersion = [string]$res.agentVersion; try { Update-UpdateMenuText } catch { } }
         if ($res.terminalName -and $res.terminalName -ne $cfg.name) { $cfg.name = $res.terminalName; try { $trayIcon.Text = "포인트 관리 프로그램 — $($cfg.name)" } catch { } }
         if ($res.storeUrl) { Set-ManageShortcut -isPrimary $Script:IsPrimary -storeUrl $res.storeUrl }
         return $true
@@ -515,7 +557,8 @@ function Show-RedeemPopup {
                 $lblResult.Text = "다른 곳에서 사용 중 — 현재 적립만 가능합니다."
                 [System.Windows.Forms.MessageBox]::Show($busyMsg, "포인트 관리 프로그램", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
             } elseif ($lookupStatus -eq 0) {
-                $lblResult.Text = "인터넷이 끊겨 서버 포인트를 확인할 수 없습니다.`n포스에 저장된 포인트만 사용 가능하고, 적립은 정상 진행되어 연결되면 서버로 옮겨집니다."
+                $lblResult.Text = "인터넷이 끊겨 지금은 포인트 [사용]을 할 수 없습니다.`n적립은 정상 진행되고 인터넷이 연결되면 서버로 옮겨집니다."
+                [System.Windows.Forms.MessageBox]::Show("인터넷 연결이 끊겨 서버의 통합 포인트를 확인할 수 없습니다.`n`n- 포인트 적립: 가능 (연결되면 자동으로 서버에 반영)`n- 포인트 사용(차감): 불가 (정확한 잔액을 확인할 수 없음)", "포인트 관리 프로그램", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             } else {
                 $lblResult.Text = Get-FriendlyError $lookupErr
             }
@@ -636,7 +679,9 @@ function Process-Queue {
                     # 폴링 때 재시도된다 — 오프라인 중 결제가 계속돼도 안전, 2026-09-28).
                     # 이번 처리분만큼만 차감(0으로 덮어쓰지 않음) — 그 사이 새 적립이 더 쌓였을
                     # 수 있어서다.
-                    Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=MEM_USABLE_PNT-$([double]$r.MEMP_ADD_AMT) WHERE MEM_NO=$(Sql-Str $memNo)"
+                    # 0 밑으로 내려가지 않게(인터넷이 끊겨 있는 동안 이미 0으로 비워 둔 경우에도 안전).
+                    $addAmt = [double]$r.MEMP_ADD_AMT
+                    Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $addAmt < 0 THEN 0 ELSE MEM_USABLE_PNT - $addAmt END WHERE MEM_NO=$(Sql-Str $memNo)"
                 }
                 if ([double]$r.MEMP_USED_AMT -gt 0) {
                     Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{
@@ -672,6 +717,11 @@ function Process-Queue {
                 } catch { }
             } else {
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') 큐 처리 실패(CRAB_SEQ=$($r.CRAB_SEQ)): $qerr" -ForegroundColor Red
+                if ($qstatus -eq 0 -and -not $Script:SwapPending.ContainsKey($memNo)) {
+                    # 인터넷이 끊겨 서버 반영을 못 한 상태 — 통합 포인트의 최종 상태를 알 수 없으므로 이 회원의 포스 잔액을 0으로 비워 [사용]을 막는다.
+                    # 적립분은 큐에 그대로 남아 있다가 인터넷이 연결되면 서버에 반영된다(중복 없음: 거래별 고유키).
+                    try { Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)" } catch { }
+                }
                 $Script:RetryError = "큐 처리 실패(재시도 중, 인터넷 연결 확인): $(Get-FriendlyError $qerr)"; $Script:LastErrorAt = (Get-Date).ToUniversalTime().ToString("o"); $passFailed = $true
                 # 일시적인 실패(인터넷 끊김 등)는 PROCESSED='Y'로 안 바꿔서 다음 순회에 재시도(멱등키가 있어 서버 쪽 중복 반영은 안 됨)
             }
@@ -679,6 +729,57 @@ function Process-Queue {
     }
     if (-not $passFailed) { $Script:RetryError = $null }  # 이번 순회에서 막힌 건이 없으면 "재시도 중" 오류 표시를 지운다
     Restore-TimedOutSwaps
+}
+
+# ─── 업데이트 — 서버의 최신 프로그램 파일(묶음)을 받아 덮어쓰고 다시 시작한다 ──────────────────
+# 실행 중인 파일을 덮어쓰는 문제를 피하려고 이 프로그램의 스크립트 묶음만 교체한다(실행파일 PointManager.exe 자체는 거의 바뀌지 않는다).
+# 설정·로그·백업 파일은 묶음에 들어 있지 않아 그대로 남는다.
+$BundleVersionPath = "$PSScriptRoot\bundle-version.txt"
+
+function Get-LocalAgentVersion {
+    if (Test-Path $BundleVersionPath) { try { return (Get-Content $BundleVersionPath -Raw).Trim() } catch { } }
+    return $null
+}
+
+function Update-UpdateMenuText {
+    $latest = $Script:ServerAgentVersion
+    $local = Get-LocalAgentVersion
+    if ($latest -and $local -ne $latest) { $itemUpdate.Text = "업데이트 (새 버전 있음)..." } else { $itemUpdate.Text = "업데이트 확인..." }
+}
+
+function Invoke-AgentUpdate {
+    $info = [System.Windows.Forms.MessageBoxIcon]::Information
+    $warn = [System.Windows.Forms.MessageBoxIcon]::Warning
+    try { $v = Invoke-RestMethod -Method Get -Uri "$($cfg.baseUrl)/api/v1/pos-agent/version" -TimeoutSec 15 }
+    catch { [System.Windows.Forms.MessageBox]::Show("서버에 연결할 수 없어 업데이트를 확인하지 못했습니다.`n인터넷 연결을 확인해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
+    $local = Get-LocalAgentVersion
+    if ($local -eq $v.version) { [System.Windows.Forms.MessageBox]::Show("이미 최신 버전입니다.", "업데이트", "OK", $info) | Out-Null; return }
+    $ans = [System.Windows.Forms.MessageBox]::Show("새 버전이 있습니다. 지금 업데이트할까요?`n(업데이트하는 동안 프로그램이 잠깐 다시 시작됩니다. 결제 중이 아닐 때 진행해주세요.)", "업데이트", "YesNo", $info)
+    if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    if ($Script:SwapPending.Count -gt 0) { [System.Windows.Forms.MessageBox]::Show("지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 시도해주세요.", "업데이트", "OK", $warn) | Out-Null; return }
+    $tmpZip = Join-Path $env:TEMP "pm-agent-update.zip"
+    $tmpDir = Join-Path $env:TEMP "pm-agent-update"
+    try {
+        Invoke-WebRequest -Uri "$($cfg.baseUrl)/api/v1/pos-agent/bundle" -OutFile $tmpZip -UseBasicParsing -TimeoutSec 60
+        if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpZip, $tmpDir)
+        if (-not (Test-Path "$tmpDir\point-terminal-agent.ps1")) { throw "받은 파일에 프로그램이 없습니다." }
+        # 새 스크립트 문법 확인 — 깨진 파일이면 교체하지 않는다.
+        $errs = $null; [System.Management.Automation.Language.Parser]::ParseFile("$tmpDir\point-terminal-agent.ps1", [ref]$null, [ref]$errs) | Out-Null
+        if ($errs -and $errs.Count -gt 0) { throw "받은 프로그램 파일이 올바르지 않습니다." }
+        Get-ChildItem $tmpDir -File | ForEach-Object { Copy-Item $_.FullName (Join-Path $PSScriptRoot $_.Name) -Force }
+        $v.version | Out-File -Encoding ASCII $BundleVersionPath
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("업데이트하지 못했습니다(기존 프로그램은 그대로 둡니다).`n$_", "업데이트", "OK", $warn) | Out-Null
+        return
+    }
+    Write-Host "업데이트 완료($($v.version)) — 다시 시작합니다."
+    # 이 프로세스가 끝나 뮤텍스가 풀린 뒤 새 프로세스가 뜨도록 잠깐 기다렸다 실행한다.
+    $cmd = "Start-Sleep -Seconds 3; Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','$PSCommandPath' -WindowStyle Hidden"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-Command", $cmd) -WindowStyle Hidden
+    $trayIcon.Visible = $false
+    [System.Windows.Forms.Application]::Exit()
 }
 
 # ─── 사용 팝업 트레이 아이콘 ───────────────────────────────────────────────────
@@ -692,6 +793,13 @@ $itemRedeem = $menu.Items.Add("포인트 사용...")
 $itemRedeem.Add_Click({ Show-RedeemPopup })
 $itemList = $menu.Items.Add("포스기 목록...")
 $itemList.Add_Click({ Show-TerminalList })
+$itemTransfer = $menu.Items.Add("포인트 서버로 이전...")
+$itemTransfer.Add_Click({
+    $a = [System.Windows.Forms.MessageBox]::Show("이 포스기에 남아 있는 회원 포인트를 모두 서버로 옮기고 포스 잔액을 0으로 만듭니다.`n(이미 옮겼다면 남은 포인트가 있는 회원만 옮기며, 여러 번 실행해도 안전합니다. 옮기기 전 원본을 바탕화면에 백업합니다.)`n`n진행할까요?", "포인트 서버로 이전", "YesNo", "Question")
+    if ($a -eq [System.Windows.Forms.DialogResult]::Yes) { try { Invoke-PointTransfer $true } catch { [System.Windows.Forms.MessageBox]::Show("포인트 이전 중 오류가 났습니다.`n$_", "포인트 서버로 이전", "OK", "Warning") | Out-Null } }
+})
+$itemUpdate = $menu.Items.Add("업데이트 확인...")
+$itemUpdate.Add_Click({ Invoke-AgentUpdate })
 $itemExit = $menu.Items.Add("종료")
 $itemExit.Add_Click({ $trayIcon.Visible = $false; [System.Windows.Forms.Application]::Exit() })
 $trayIcon.ContextMenuStrip = $menu
@@ -704,7 +812,6 @@ $heartbeatTimer.Add_Tick({ Send-Heartbeat | Out-Null })
 $heartbeatTimer.Start()
 Send-Heartbeat | Out-Null
 
-try { Invoke-InitialBulkImport } catch { Write-Host "일괄 이전 시도 중 오류: $_" -ForegroundColor Red }
 
 $queueTimer = New-Object System.Windows.Forms.Timer; $queueTimer.Interval = $QueuePollSec * 1000
 $queueTimer.Add_Tick({
@@ -715,7 +822,13 @@ $queueTimer.Start()
 # 방금 설치·등록한 직후라면 이 매장의 포스기 목록을 자동으로 한 번 보여준다.
 if ($ShowList) {
     $Script:ListOnceTimer = New-Object System.Windows.Forms.Timer; $Script:ListOnceTimer.Interval = 1500
-    $Script:ListOnceTimer.Add_Tick({ $Script:ListOnceTimer.Stop(); Show-TerminalList })
+    $Script:ListOnceTimer.Add_Tick({
+        $Script:ListOnceTimer.Stop()
+        Show-TerminalList
+        # 설치 직후 한 번 — 기존 회원 포인트를 지금 서버로 옮길지 묻는다(나중에 트레이 메뉴 '포인트 서버로 이전'으로도 할 수 있다).
+        $a = [System.Windows.Forms.MessageBox]::Show("설치가 끝났습니다.`n이 포스기에 남아 있는 기존 회원 포인트를 지금 서버로 옮길까요?`n(나중에 트레이 메뉴의 '포인트 서버로 이전'으로도 할 수 있습니다.)", "포인트 관리 프로그램", "YesNo", "Question")
+        if ($a -eq [System.Windows.Forms.DialogResult]::Yes) { try { Invoke-PointTransfer $true } catch { [System.Windows.Forms.MessageBox]::Show("포인트 이전 중 오류가 났습니다.`n$_", "포인트 서버로 이전", "OK", "Warning") | Out-Null } }
+    })
     $Script:ListOnceTimer.Start()
 }
 

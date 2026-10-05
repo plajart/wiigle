@@ -1,5 +1,5 @@
-﻿# 포인트 복구 (restore.bat 으로 실행) — 매장 초기화(일괄 이전) 때 바탕화면에 만들어 둔 백업 CSV로
-# 포스DB의 회원 포인트를 "초기화 이전" 값으로 되돌린다.
+﻿# 포인트 복구 (restore.bat 으로 실행) — "포인트 서버로 이전" 때 바탕화면에 만들어 둔 백업 CSV로
+# 포스DB의 회원 포인트를 "이전 전" 값으로 되돌린다(가장 최근 백업 파일을 사용).
 #
 # ※ 이 프로그램을 더 이상 쓰지 않고 예전 포스 방식으로 돌아갈 때만 사용하세요(먼저 uninstall.bat).
 #    복구하면 예전 포인트가 포스에 다시 생기므로, 이 프로그램을 계속 쓰면 포인트가 서버와 포스에 이중으로 남습니다.
@@ -22,9 +22,9 @@ if ($running) {
 
 if (-not $BackupCsvPath) {
     $desktop = [Environment]::GetFolderPath('Desktop')
-    $latest = Get-ChildItem -Path $desktop -Filter "포인트초기화백업_*.csv" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $latest = @(Get-ChildItem -Path $desktop -Filter "포인트서버이전백업_*.csv" -ErrorAction SilentlyContinue) + @(Get-ChildItem -Path $desktop -Filter "포인트초기화백업_*.csv" -ErrorAction SilentlyContinue) | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $latest) {
-        Write-Host "바탕화면에서 백업 파일(포인트초기화백업_*.csv)을 찾을 수 없습니다." -ForegroundColor Red
+        Write-Host "바탕화면에서 백업 파일(포인트서버이전백업_*.csv)을 찾을 수 없습니다." -ForegroundColor Red
         exit 1
     }
     $BackupCsvPath = $latest.FullName

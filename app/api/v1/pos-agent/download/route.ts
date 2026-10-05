@@ -9,17 +9,8 @@ import PosProvisionToken, { hashProvisionToken } from "@/lib/models/PosProvision
 import Store from "@/lib/models/Store";
 import { handleApiError } from "@/lib/api-utils";
 import { createZip, type ZipEntry } from "@/lib/zip";
-
-const AGENT_SRC_DIR = path.join(process.cwd(), "pos-agent-src");
-const AGENT_FILES = [
-  "point-terminal-agent.ps1",
-  "start.bat",
-  "uninstall.bat",
-  "uninstall.ps1",
-  "restore.bat",
-  "restore-bulk-import-backup.ps1",
-  "pointmanager.ico",
-];
+import Company from "@/lib/models/Company";
+import { AGENT_FILES, AGENT_SRC_DIR, getLauncherPath, appendPayload } from "@/lib/agent-bundle";
 
 // 매장 포스 프로그램 다운로드 — 로그인한 매장 관리자(또는 ?storeId=로 들어온 운영자·소유자)만.
 // 요청할 때마다 이 매장 전용 1회용 설치 토큰을 새로 만들어 설정파일(provision.json)에 내장한
@@ -33,18 +24,34 @@ export async function GET(req: Request) {
     const storeId = await resolveStoreId(session, queryStoreId);
     if (!storeId) throw new ApiError(400, "STORE_REQUIRED");
 
-    const store = await Store.findById(storeId).select("name").lean();
+    const store = await Store.findById(storeId).select("name companyId").lean();
     if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
+    const company = await Company.findById(store.companyId).select("name").lean();
 
     const token = crypto.randomBytes(32).toString("hex");
     await PosProvisionToken.create({ tokenHash: hashProvisionToken(token), storeId, issuedBy: session.sub });
+
+    const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
+    // 어느 고객사·매장에 등록되는 설치 파일인지 설치 때 화면에 보여주기 위해 이름도 함께 싣는다.
+    const provision = { baseUrl, token, storeName: store.name, companyName: company?.name ?? "" };
+
+    // 실행파일(PointManager.exe)이 준비돼 있으면 설치 정보를 뒤에 붙인 exe 한 개를 내려준다(없으면 아래 zip 방식).
+    const launcher = await getLauncherPath();
+    if (launcher) {
+      const exe = await fs.readFile(launcher);
+      return new NextResponse(new Uint8Array(appendPayload(exe, provision)), {
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": `attachment; filename="PointManager-Setup.exe"`,
+          "Cache-Control": "no-store",
+        },
+      });
+    }
 
     const entries: ZipEntry[] = [];
     for (const name of AGENT_FILES) {
       entries.push({ name, data: await fs.readFile(path.join(AGENT_SRC_DIR, name)) });
     }
-    const baseUrl = process.env.APP_BASE_URL || new URL(req.url).origin;
-    const provision = { baseUrl, token, storeName: store.name };
     // 앞의 BOM은 Windows PowerShell 5.1이 UTF-8(한글 매장명)로 읽게 하기 위한 것
     entries.push({ name: "provision.json", data: Buffer.from("﻿" + JSON.stringify(provision, null, 2), "utf8") });
 

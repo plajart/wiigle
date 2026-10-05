@@ -23,7 +23,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "TOO_MANY_ENTRIES_PER_CALL", max: MAX_ENTRIES_PER_CALL }, { status: 400 });
     }
 
-    const result = await bulkImportLegacyBalances(storeId, terminalId, entries);
+    const batchId = typeof body?.batchId === "string" && /^[A-Za-z0-9_-]{6,64}$/.test(body.batchId) ? body.batchId : undefined;
+    const result = await bulkImportLegacyBalances(storeId, terminalId, entries, batchId);
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     return handleApiError(e);

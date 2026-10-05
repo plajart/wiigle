@@ -21,7 +21,9 @@ export async function GET(req: Request) {
     if (session.role === "admin") {
       filter = { companyId: session.companyAdminOf };
     } else {
-      const companyId = queryCompanyId ?? (await resolveCompanyId(session));
+      // ?all=1 — 본사가 포스기를 다른 고객사·매장으로 옮길 때 전체 매장 목록이 필요하다.
+      const wantAll = new URL(req.url).searchParams.get("all") === "1";
+      const companyId = wantAll ? null : queryCompanyId ?? (await resolveCompanyId(session));
       if (companyId) filter = { companyId };
     }
     const [stores, companies] = await Promise.all([

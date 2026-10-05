@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import PosTerminal from "@/lib/models/PosTerminal";
+import Store from "@/lib/models/Store";
+import Company from "@/lib/models/Company";
+import { getAgentBundle } from "@/lib/agent-bundle";
 import { handleApiError } from "@/lib/api-utils";
 
 // POS 단말 프로그램이 주기적으로(예: 1분마다) 호출 — "지금 이 순간 살아있다"는 신호.
@@ -35,7 +38,16 @@ export async function POST(req: Request) {
 
     // isPrimary를 하트비트 응답에 실어보내 에이전트가 매번 최신 상태로 관리모드
     // 바로가기(대표 포스기만)를 만들거나 지울 수 있게 한다.
-    return NextResponse.json({ ok: true, isPrimary: terminal.isPrimary === true, storeUrl: `${process.env.APP_BASE_URL || "https://concrab.com"}/store` });
+    // 포스기가 다른 매장으로 옮겨졌을 때(고객사 운영자·본사가 이동) 화면 표시를 최신으로 맞추고, 새 버전이 있으면 알려준다.
+    const store = await Store.findById(terminal.storeId).select("name companyId").lean();
+    const company = store ? await Company.findById(store.companyId).select("name").lean() : null;
+    let agentVersion: string | null = null;
+    try {
+      agentVersion = (await getAgentBundle()).version;
+    } catch {
+      // 버전 확인 실패는 하트비트를 막지 않는다
+    }
+    return NextResponse.json({ ok: true, terminalName: terminal.name, storeId: String(terminal.storeId), storeName: store?.name ?? null, companyName: company?.name ?? null, agentVersion, isPrimary: terminal.isPrimary === true, storeUrl: `${process.env.APP_BASE_URL || "https://concrab.com"}/store` });
   } catch (e) {
     return handleApiError(e);
   }

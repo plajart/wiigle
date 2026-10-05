@@ -22,7 +22,13 @@ const RENAME_ERRORS: Record<string, string> = {
 };
 
 // 매장 대시보드의 "포스 단말기" 목록 — 상태 확인, 이름 변경, 대표 지정, 해지.
-export default function TerminalList({ storeId }: { storeId: string }) {
+type StoreOpt = { _id: string; name: string; companyName: string };
+
+export default function TerminalList({ storeId, role }: { storeId: string; role: string }) {
+  const canMove = role === "owner" || role === "admin"; // 매장 관리자는 포스기를 옮길 수 없다
+  const [moveFor, setMoveFor] = useState<string | null>(null);
+  const [stores, setStores] = useState<StoreOpt[] | null>(null);
+  const [targetStore, setTargetStore] = useState("");
   const [terminals, setTerminals] = useState<Terminal[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [detailFor, setDetailFor] = useState<string | null>(null);
@@ -82,6 +88,41 @@ export default function TerminalList({ storeId }: { storeId: string }) {
       return;
     }
     setEditingId(null);
+    load();
+  }
+
+  async function openMove(terminalId: string) {
+    setMsg(null);
+    setMoveFor(terminalId);
+    setTargetStore("");
+    if (!stores) {
+      const res = await fetch(`/api/v1/stores${role === "owner" ? "?all=1" : ""}`);
+      const d = await res.json().catch(() => ({}));
+      setStores(Array.isArray(d.stores) ? d.stores : []);
+    }
+  }
+
+  async function doMove(terminalId: string) {
+    const target = stores?.find((s) => s._id === targetStore);
+    if (!target) return;
+    if (!window.confirm(`이 포스기를 "${target.companyName} › ${target.name}" 매장으로 옮깁니다. 이후 이 포스기의 적립·사용은 그 매장에 기록됩니다. 진행할까요?`)) return;
+    const res = await fetch(`/api/v1/stores/${storeId}/pos-terminals/${terminalId}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetStoreId: targetStore }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setMsg(
+        d.error === "PENDING_UNSENT"
+          ? "서버로 아직 못 보낸 결제가 남아 있어 옮길 수 없습니다. 포스기의 인터넷 연결을 확인하고, 모두 반영된 뒤 다시 시도해 주세요."
+          : d.error === "FORBIDDEN_STORE_SCOPE"
+            ? "이 매장으로는 옮길 수 없습니다(자기 고객사 안의 매장만 가능)."
+            : "옮기지 못했습니다. 잠시 후 다시 시도해 주세요."
+      );
+      return;
+    }
+    setMoveFor(null);
     load();
   }
 
@@ -145,6 +186,11 @@ export default function TerminalList({ storeId }: { storeId: string }) {
               <button type="button" className="sm ghost" onClick={() => { setEditName(t.name); setEditingId(t._id); }}>
                 이름 변경
               </button>
+              {canMove && (
+                <button type="button" className="sm ghost" onClick={() => openMove(t._id)}>
+                  매장 이동
+                </button>
+              )}
               <button type="button" className="sm ghost" onClick={() => toggleDetail(t._id)}>
                 {detailFor === t._id ? "닫기" : "상세보기"}
               </button>
@@ -158,6 +204,22 @@ export default function TerminalList({ storeId }: { storeId: string }) {
               </button>
             </span>
           </div>
+          {moveFor === t._id && (
+            <div style={{ padding: "0 4px 14px 4px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <select style={{ marginBottom: 0 }} value={targetStore} onChange={(e) => setTargetStore(e.target.value)}>
+                <option value="">옮길 매장 선택</option>
+                {(stores ?? [])
+                  .filter((s) => s._id !== storeId)
+                  .map((s) => (
+                    <option key={s._id} value={s._id}>
+                      {s.companyName} › {s.name}
+                    </option>
+                  ))}
+              </select>
+              <button type="button" className="sm" disabled={!targetStore} onClick={() => doMove(t._id)}>이동</button>
+              <button type="button" className="sm ghost" onClick={() => setMoveFor(null)}>취소</button>
+            </div>
+          )}
           {detailFor === t._id && (
             <div style={{ padding: "0 4px 14px 4px" }}>
               {detail === null && <p className="muted">불러오는 중...</p>}

@@ -44,7 +44,7 @@ const TR_LABEL: Record<string, string> = {
 
 const fmt = (s: string) => new Date(s).toLocaleString("ko-KR");
 
-export default function StoreDashboardClient({ storeId }: { storeId: string }) {
+export default function StoreDashboardClient({ storeId, role }: { storeId: string; role: string }) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [events, setEvents] = useState<Ev[] | null>(null);
   const [transfers, setTransfers] = useState<Tr[] | null>(null);
@@ -102,7 +102,7 @@ export default function StoreDashboardClient({ storeId }: { storeId: string }) {
       )}
 
       <h2>포스 단말기</h2>
-      <TerminalList storeId={storeId} />
+      <TerminalList storeId={storeId} role={role} />
 
       <h2>최근 포인트 거래</h2>
       <div className="card">

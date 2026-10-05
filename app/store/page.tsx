@@ -9,5 +9,5 @@ export default async function StorePage({ searchParams }: { searchParams: Promis
   const { storeId: queryStoreId } = await searchParams;
   const storeId = await resolveStoreId(session, queryStoreId);
   if (!storeId) redirect("/me");
-  return <StoreDashboardClient storeId={storeId} />;
+  return <StoreDashboardClient storeId={storeId} role={session.role} />;
 }
