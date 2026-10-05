@@ -24,6 +24,11 @@ git remote -v          # origin = https://github.com/plajart/wiigle
   tar czf ~/app-backup-$(date +%Y%m%d-%H%M).tgz <서버 앱 디렉터리>   # uploads/, .env* 포함(이 파일들은 git에 없음)
   ```
 
+## 2-0. 서버가 git 저장소가 아닐 때 (실제 운영 방식)
+- 운영 디렉터리는 git 저장소가 아니다. 별도 위치(예: `/root/deploy-src/point-manager`)에 clone → 서버 직접 수정분을 diff로 확인 → rsync(`--delete` 금지, `node_modules/.next/uploads/.env*/data` 제외)로 반영한다.
+- **rsync 대상은 파드가 실제로 읽는 호스트 경로여야 한다**(HostPath로 `/web/concrab`에 마운트되는 디렉터리). 반영 후 반드시 `diff -rq --exclude=node_modules --exclude=.next --exclude=uploads --exclude='.env*' --exclude=data <clone경로> <파드가 읽는 경로>` 결과가 비어 있는지 확인하고, 그 뒤에 빌드·재시작한다. 빌드 시각이 코드 반영 시각보다 뒤인지도 확인한다.
+- 서버에서 직접 고친 파일은 저장소에 없으니 다음 배포 때 덮어써진다. 고칠 일이 있으면 저장소(클라우드 세션)에서 고쳐 푸시한 뒤 배포한다.
+
 ## 2. 최신 코드 가져오기 (pull)
 ```bash
 git fetch origin claude/sleepy-darwin-0zm54g

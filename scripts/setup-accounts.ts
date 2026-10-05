@@ -28,6 +28,9 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
 const APPLY = process.argv.includes("--apply");
+// --roles-only: 비밀번호·첫 로그인 안내는 건드리지 않고 역할(role)과 소속(companyAdminOf/storeManagerOf)만 목표 상태로 맞춘다.
+// 계정이 이미 있는 경우에만 동작하고 새로 만들지 않는다(예: 마이그레이션이 계정을 잘못된 role로 바꿨을 때 되돌리는 용도).
+const ROLES_ONLY = process.argv.includes("--roles-only");
 
 const BAE = { phone: "01035587496", name: "배병철" };
 const OWNER2 = { phone: "01000000000", name: "소유자" };
@@ -41,7 +44,7 @@ const STORE_PARTY = "더파티 시청점";
 async function main() {
   const uri = process.env.MONGODB_URI;
   if (!uri) throw new Error("MONGODB_URI 환경변수가 필요합니다");
-  const fixedPassword = process.env.FIXED_PASSWORD;
+  const fixedPassword = process.env.FIXED_PASSWORD ?? (ROLES_ONLY ? "roles-only-not-used" : undefined);
   if (!fixedPassword) throw new Error("FIXED_PASSWORD 환경변수가 필요합니다(4개 계정에 설정할 비밀번호)");
   if (fixedPassword.length < 8) throw new Error("FIXED_PASSWORD는 8자 이상이어야 합니다");
 
@@ -107,8 +110,9 @@ async function main() {
 
   // ── 반영 (4개 계정 모두 같은 비밀번호, 첫 로그인 때 변경 안내)
   const passwordHash = await bcrypt.hash(fixedPassword, 10);
-  const common = { passwordHash, phoneVerified: true, firstLogin: true };
-  const clear = { initialPassword: "" };
+  const common: Record<string, unknown> = ROLES_ONLY ? {} : { passwordHash, phoneVerified: true, firstLogin: true };
+  const clear: Record<string, string> = ROLES_ONLY ? {} : { initialPassword: "" };
+  if (ROLES_ONLY) console.log("(--roles-only: 비밀번호·첫 로그인 안내는 바꾸지 않습니다)");
 
   await users.updateOne(
     { _id: bae._id },
@@ -121,6 +125,8 @@ async function main() {
       { _id: owner2._id },
       { $set: { role: "owner", ...common }, $unset: { companyAdminOf: "", storeManagerOf: "", ...clear } }
     );
+  } else if (ROLES_ONLY) {
+    console.log(`[2] ${OWNER2.phone} 계정이 없어 건너뜀(--roles-only는 계정을 새로 만들지 않음)`);
   } else {
     let digitalCardNo = "";
     for (let i = 0; i < 10 && !digitalCardNo; i++) {

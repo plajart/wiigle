@@ -80,7 +80,9 @@ async function main() {
   if (orphan > 0) console.log(`주의: 위 처리 후에도 고객사가 없는 매장 ${orphan}개 (companyId는 필수 필드) — 수동 지정 필요`);
 
   // 3. 옛 플랫폼 관리자(isHqAdmin) → owner(본사)
-  const hqFilter = { isHqAdmin: true, role: { $ne: "owner" } };
+  // 이미 고객사 운영자(companyAdminOf)나 매장 관리자(storeManagerOf)로 지정된 계정은 옛 isHqAdmin 표시가 남아 있어도 소유자로 올리지 않는다
+  // (최상위 권한이므로, 소유자는 setup-accounts.ts 가 정한 계정으로만 둔다).
+  const hqFilter = { isHqAdmin: true, role: { $nin: ["owner", "admin", "manager"] }, companyAdminOf: { $in: [null] }, storeManagerOf: { $in: [null] } };
   const hqCount = await users.countDocuments(hqFilter);
   console.log(`isHqAdmin 유저 → owner: ${hqCount}명`);
   if (APPLY && hqCount > 0) await users.updateMany(hqFilter, { $set: { role: "owner" } });
