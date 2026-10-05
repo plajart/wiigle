@@ -15,8 +15,8 @@ const ERRORS: Record<string, string> = {
 };
 
 // 매장 한 곳의 관리자 목록·지정·해제
-function ManagersPanel({ store, onRenamed }: { store: Store; onRenamed: () => void }) {
-  const [editing, setEditing] = useState(false);
+export function ManagersPanel({ store, onRenamed, startEditing = false }: { store: Store; onRenamed: () => void; startEditing?: boolean }) {
+  const [editing, setEditing] = useState(startEditing);
   const [editName, setEditName] = useState(store.name);
   const [managers, setManagers] = useState<Manager[] | null>(null);
   const [phone, setPhone] = useState("");
