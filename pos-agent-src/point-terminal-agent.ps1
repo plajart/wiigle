@@ -1020,7 +1020,7 @@ $Script:WatchBusy = $false
 function Inject-ServerBalance([string]$phone) {
     $tail = if ($phone.Length -ge 4) { $phone.Substring($phone.Length - 4) } else { $phone }
     $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
-    if ($members.Count -eq 0) { return }   # 챔프에 없는 번호(입력 중이거나 비회원) — 아무것도 하지 않는다
+    if ($members.Count -eq 0) { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 챔프에 이 번호의 회원이 없어 건너뜀(****$tail)"; return }   # 입력 중이거나 비회원
     $memNo = $members[0].MEM_NO
     if ($Script:SwapPending.ContainsKey($memNo)) { return }   # 이미 반영 중
     try {
@@ -1038,11 +1038,17 @@ function Inject-ServerBalance([string]$phone) {
             Show-ResultToast "다른 곳에서 포인트 사용 중`n$where`n지금은 적립만 가능"
         } elseif ($status -eq 0) {
             Show-ResultToast "인터넷이 끊겨 포인트 사용 불가`n(적립은 가능)"
+        } else {
+            Show-ResultToast "서버 포인트 조회 실패`n$(Get-FriendlyError $e)"
         }
         return
     }
     $avail = [double]$res.availableBalance
-    if ($avail -le 0) { return }
+    if ($avail -le 0) {
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 서버 통합 포인트가 0원이라 반영할 것이 없음(****$tail)"
+        Show-ResultToast "서버 통합 포인트 0원`n(반영할 포인트 없음)"
+        return
+    }
     # 포스에 예전 포인트가 남아 있으면 먼저 서버로 옮긴다(팝업과 동일).
     if ([double]$members[0].MEM_USABLE_PNT -gt 0) {
         try {
@@ -1073,6 +1079,7 @@ function Watch-ChampPhone {
             $current[$key] = $true
             if ($Script:AutoSeen.ContainsKey($key)) { continue }   # 같은 칸의 같은 번호는 화면에 남아 있는 동안 한 번만 처리
             $Script:AutoSeen[$key] = $true
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 전화번호 입력 감지(****$($f[2].Substring($f[2].Length - 4)), $($f[1]))"
             try { Inject-ServerBalance $f[2] } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 오류: $_" -ForegroundColor Red }
         }
         # 화면에서 사라진 번호는 기록에서 지운다(같은 번호를 다시 입력하면 다시 반영).
