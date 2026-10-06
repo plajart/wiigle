@@ -472,7 +472,7 @@ node -e "const w=require('web-push');console.log(w.generateVAPIDKeys())"
   - 웹 관리모드 수동 적립·사용(`POST /api/v1/pos/earn`, `/checkout`, 화면 `/pos`, 매장 메뉴 "POS 결제 터미널")
   - 고객사·본사의 통합포인트 지급·조정(`POST /api/v1/hq/points/grant`, `/adjust`, 화면 `/hq/points`, 메뉴 "통합포인트 관리")
   - (고객 간 이체 함수 `transferPoints`는 호출하는 API·화면이 없다. 벤더 연동 `vendor-sync`는 챔프 쪽에서 오는 이벤트라 유지.)
-- 막힌 API는 403 `MANUAL_POINT_CHANGE_DISABLED`, 메뉴·화면은 숨기거나 대시보드로 이동. 비상 정정이 필요할 때만 서버 환경변수 `ALLOW_MANUAL_POINT_CHANGES=1` 로 켜고 재시작, 끝나면 끈다(코드는 그대로 두었다).
+- 막힌 API는 403 `MANUAL_POINT_CHANGE_DISABLED`, 메뉴·화면은 숨기거나 대시보드로 이동. **본사 관리모드 "임의 포인트 변경 설정"의 스위치**로 켜고 끈다(기본 꺼짐, DB `platformsettings` 에 저장, 재시작·환경변수 불필요, 3초 안에 반영, 켜고 끈 기록은 감사로그 `MANUAL_POINTS_ENABLE/DISABLE`). 오류 정정이 끝나면 바로 끈다. 환경변수 `ALLOW_MANUAL_POINT_CHANGES` 는 더 이상 쓰지 않는다.
 - **이전하는 짧은 동안 포인트 변경 차단(포스 프로그램)**: '포인트 서버 이전' 진행 중에는 결제 큐 처리, 남은 포스 잔액 이전, '포인트 사용' 조회, 자동 업데이트를 잠시 멈춘다(이전 끝나면 이어서 처리). 챔프 자체의 결제를 프로그램이 막을 수는 없다 — 이전하는 순간에 같은 회원이 챔프에서 결제하면 그 건은 다음 큐 처리 때 반영되며, 포스 잔액 차감은 이전한 금액만큼만 하므로 새로 쌓인 잔액은 건드리지 않는다.
 
 ## 6. 검증 못 한 것 / 알려진 한계

@@ -1,11 +1,11 @@
-import { MANUAL_POINT_CHANGES_ENABLED } from "@/lib/manual-points";
+import { isManualPointChangesEnabled } from "@/lib/manual-points";
 import { redirect } from "next/navigation";
 import { getFreshSession } from "@/lib/session";
 import { resolveStoreId } from "@/lib/store-context";
 import PosClient from "./PosClient";
 
 export default async function PosPage() {
-  if (!MANUAL_POINT_CHANGES_ENABLED) redirect("/store"); // 웹 수동 적립·사용은 막혀 있다(포인트는 챔프 결제로만 바뀐다)
+  if (!(await isManualPointChangesEnabled())) redirect("/store"); // 웹 수동 적립·사용은 막혀 있다(포인트는 챔프 결제로만 바뀐다)
   const session = await getFreshSession();
   if (!session) redirect("/pos/login");
   // manager는 자기 매장, 소유자·고객사 운영자는 매장 관리모드로 들어가 있는 매장. 그 외는 로그인 화면으로.

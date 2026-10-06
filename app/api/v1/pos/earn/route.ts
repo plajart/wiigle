@@ -8,7 +8,7 @@ import { handleApiError } from "@/lib/api-utils";
 // 계산원이 POS 앱에서 고객을 매칭한 뒤, 적립할 포인트를 직접 입력해 그 자리에서 적립을 확정한다(수동 보조 수단).
 export async function POST(req: Request) {
   try {
-    assertManualPointChangesAllowed(); // 챔프 외 임의 포인트 변경은 기본으로 막는다
+    await assertManualPointChangesAllowed(); // 챔프 외 임의 포인트 변경은 본사가 켜기 전까지 막는다
     await dbConnect();
     const session = await requireOwnStore();
     const { customerPhone, earnAmount, clientTxnId } = await req.json();

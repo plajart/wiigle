@@ -21,6 +21,8 @@ const ACTION_LABEL: Record<string, string> = {
   POS_TERMINAL_MOVED: "포스기 매장 이동",
   STORE_RENAME: "매장 이름 변경",
   COMPANY_RENAME: "고객사 이름 변경",
+  MANUAL_POINTS_ENABLE: "임의 포인트 변경 켜짐",
+  MANUAL_POINTS_DISABLE: "임의 포인트 변경 꺼짐",
   POS_TERMINAL_RENAME: "포스기 이름 변경",
   EARN_CANCEL_SHORTFALL: "적립 취소(잔액 부족)",
   CUSTOMER_PASSWORD_RESET: "고객 비밀번호 초기화",
