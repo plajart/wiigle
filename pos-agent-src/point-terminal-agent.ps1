@@ -948,6 +948,138 @@ function Process-Queue {
     Restore-TimedOutSwaps
 }
 
+# ─── 고객 조회 시 통합포인트 자동 반영 (시험 기능, 기본 꺼짐) ─────────────────────────────────────────────
+# 챔프는 고객 조회·실적 화면이 포스DB(MEMBER.MEM_USABLE_PNT)를 읽는 순간 이미 값이 정해져 있어야 통합 잔액이 보인다.
+# 조회는 DB에 흔적을 남기지 않으므로, 챔프 고객 검색창의 전화번호 입력칸(Edit/PBEDIT80)을 읽기만 해서(키·마우스를 가로채지 않는다)
+# 번호가 완성되는 순간 서버 통합 잔액을 포스DB에 미리 주입한다. 계산원이 [확인]을 누르기 전에 반영이 끝나도록 0.3초마다 살핀다.
+# 트레이 메뉴의 "고객 조회 시 통합포인트 자동 반영" 체크로 켜고 끈다(설정 파일 autoInject). 끄면 기존 '포인트 사용...' 팝업만 쓴다.
+if (-not ([System.Management.Automation.PSTypeName]'ChampWatch').Type) {
+    Add-Type @"
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public class ChampWatch {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint timeout, out IntPtr result);
+    static string TextOf(IntPtr h) {
+        StringBuilder sb = new StringBuilder(64);
+        IntPtr r;
+        SendMessageTimeout(h, 0x000D, (IntPtr)64, sb, 0x0002, 100, out r);
+        return sb.ToString();
+    }
+    static string DigitsOnly(string t) {
+        StringBuilder b = new StringBuilder();
+        foreach (char c in t) { if (c >= '0' && c <= '9') b.Append(c); else if (c != '-' && c != ' ') return ""; }
+        return b.ToString();
+    }
+    // 지정한 프로세스의 보이는 창 안에서, 전화번호 모양(01로 시작하는 10~11자리 숫자)이 들어 있는 입력칸을 "hwnd|클래스|숫자" 로 돌려준다.
+    public static List<string> FindPhones(string[] procNames) {
+        HashSet<uint> pids = new HashSet<uint>();
+        foreach (string n in procNames) { foreach (Process p in Process.GetProcessesByName(n)) pids.Add((uint)p.Id); }
+        List<string> res = new List<string>();
+        if (pids.Count == 0) return res;
+        EnumProc top = delegate (IntPtr h, IntPtr l) {
+            if (!IsWindowVisible(h)) return true;
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (!pids.Contains(pid)) return true;
+            EnumProc child = delegate (IntPtr c, IntPtr l2) {
+                if (!IsWindowVisible(c)) return true;
+                StringBuilder cc = new StringBuilder(64); GetClassName(c, cc, 64);
+                string cls = cc.ToString();
+                if (cls == "Edit" || cls == "PBEDIT80") {
+                    string d = DigitsOnly(TextOf(c));
+                    if (d.Length >= 10 && d.Length <= 11 && d.StartsWith("01")) res.Add(c.ToInt64() + "|" + cls + "|" + d);
+                }
+                return true;
+            };
+            EnumChildWindows(h, child, IntPtr.Zero);
+            return true;
+        };
+        EnumWindows(top, IntPtr.Zero);
+        return res;
+    }
+}
+"@
+}
+
+$Script:AutoInject = $false
+try { $Script:AutoInject = [bool]$cfg.autoInject } catch { }
+$Script:ChampProcNames = @("champos")
+try { if ($cfg.champProcess) { $Script:ChampProcNames = @("$($cfg.champProcess)") } } catch { }
+$Script:AutoSeen = @{}
+$Script:WatchBusy = $false
+
+# 서버 통합 가용 잔액을 이 번호의 챔프 회원 행(MEM_USABLE_PNT)에 주입한다 — '포인트 사용...' 팝업과 같은 처리(조회 잠금 포함)를 조용히 수행.
+function Inject-ServerBalance([string]$phone) {
+    $tail = if ($phone.Length -ge 4) { $phone.Substring($phone.Length - 4) } else { $phone }
+    $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
+    if ($members.Count -eq 0) { return }   # 챔프에 없는 번호(입력 중이거나 비회원) — 아무것도 하지 않는다
+    $memNo = $members[0].MEM_NO
+    if ($Script:SwapPending.ContainsKey($memNo)) { return }   # 이미 반영 중
+    try {
+        $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -TimeoutSec 6 `
+            -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
+    } catch {
+        $e = $_
+        $code = $null; $holder = $null
+        try { $eb = $e.ErrorDetails.Message | ConvertFrom-Json; $code = $eb.error; $holder = $eb.holder } catch { }
+        $status = 0
+        try { $status = [int]$e.Exception.Response.StatusCode } catch { }
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 조회 실패(****$tail): $e"
+        if ($code -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
+            $where = ""; if ($holder) { $where = "$($holder.storeName) ($($holder.terminalName))" }
+            Show-ResultToast "다른 곳에서 포인트 사용 중`n$where`n지금은 적립만 가능"
+        } elseif ($status -eq 0) {
+            Show-ResultToast "인터넷이 끊겨 포인트 사용 불가`n(적립은 가능)"
+        }
+        return
+    }
+    $avail = [double]$res.availableBalance
+    if ($avail -le 0) { return }
+    # 포스에 예전 포인트가 남아 있으면 먼저 서버로 옮긴다(팝업과 동일).
+    if ([double]$members[0].MEM_USABLE_PNT -gt 0) {
+        try {
+            Move-LeftoverToServer $memNo $phone $null
+            $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -TimeoutSec 6 -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
+            $avail = [double]$res.availableBalance
+            $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
+        } catch { Write-Host "자동 반영: 남은 포인트를 서버로 옮기지 못했습니다(그대로 진행): $_" }
+    }
+    if ($avail -le 0) { return }
+    $localBefore = [double]$members[0].MEM_USABLE_PNT
+    $newLocal = $localBefore + $avail
+    Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
+    $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone }
+    Send-TransferLog "LOOKUP_TO_POS" $phone $avail $localBefore $newLocal "고객 조회 자동 반영: 서버 포인트를 포스 화면에 더함" ""
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 더함(MEM_NO=$memNo)"
+    Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
+}
+
+function Watch-ChampPhone {
+    if (-not $Script:AutoInject -or $Script:TransferBusy -or $Script:WatchBusy) { return }
+    $Script:WatchBusy = $true
+    try {
+        $current = @{}
+        foreach ($row in [ChampWatch]::FindPhones([string[]]$Script:ChampProcNames)) {
+            $f = $row.Split('|', 3)
+            $key = "$($f[0])|$($f[2])"
+            $current[$key] = $true
+            if ($Script:AutoSeen.ContainsKey($key)) { continue }   # 같은 칸의 같은 번호는 화면에 남아 있는 동안 한 번만 처리
+            $Script:AutoSeen[$key] = $true
+            try { Inject-ServerBalance $f[2] } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 오류: $_" -ForegroundColor Red }
+        }
+        # 화면에서 사라진 번호는 기록에서 지운다(같은 번호를 다시 입력하면 다시 반영).
+        foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k) } }
+    } finally { $Script:WatchBusy = $false }
+}
+
 # ─── 업데이트 — 서버의 최신 프로그램 파일(묶음)을 받아 덮어쓰고 다시 시작한다 ──────────────────
 # 실행 중인 파일을 덮어쓰는 문제를 피하려고 이 프로그램의 스크립트 묶음만 교체한다(실행파일 PointManager.exe 자체는 거의 바뀌지 않는다).
 # 설정·로그·백업 파일은 묶음에 들어 있지 않아 그대로 남는다.
@@ -1032,6 +1164,15 @@ $itemManage.Add_Click({
 })
 $itemRedeem = $menu.Items.Add("포인트 사용...")
 $itemRedeem.Add_Click({ Show-RedeemPopup })
+$itemAuto = New-Object System.Windows.Forms.ToolStripMenuItem("고객 조회 시 통합포인트 자동 반영 (시험)")
+$itemAuto.CheckOnClick = $true
+$itemAuto.Checked = $Script:AutoInject
+$itemAuto.Add_Click({
+    $Script:AutoInject = $itemAuto.Checked
+    try { $cfg | Add-Member -NotePropertyName autoInject -NotePropertyValue ([bool]$Script:AutoInject) -Force; Save-Config $cfg } catch { Write-Host "자동 반영 설정 저장 실패: $_" }
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') 고객 조회 자동 반영: $(if ($Script:AutoInject) { '켬' } else { '끔' })"
+})
+$menu.Items.Add($itemAuto) | Out-Null
 $itemList = $menu.Items.Add("포스기 목록...")
 $itemList.Add_Click({ Show-TerminalList })
 $itemTransfer = $menu.Items.Add("포인트 서버로 이전...")
@@ -1060,6 +1201,11 @@ $queueTimer.Add_Tick({
     try { Process-Queue } catch { Write-Host "큐 폴링 오류: $_" -ForegroundColor Red }
 })
 $queueTimer.Start()
+
+# 챔프 고객 검색창의 전화번호 입력을 0.3초마다 살핀다(자동 반영이 꺼져 있으면 아무것도 하지 않는다).
+$watchTimer = New-Object System.Windows.Forms.Timer; $watchTimer.Interval = 300
+$watchTimer.Add_Tick({ try { Watch-ChampPhone } catch { Write-Host "자동 반영 감시 오류: $_" -ForegroundColor Red } })
+$watchTimer.Start()
 
 # 방금 설치·등록한 직후라면 이 매장의 포스기 목록을 자동으로 한 번 보여준다.
 if ($ShowList) {
