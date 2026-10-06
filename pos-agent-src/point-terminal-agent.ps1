@@ -378,13 +378,60 @@ $AuthHeader = @{ Authorization = "Bearer $($cfg.apiKey)" }
 
 # ─── 챔프 DB 연결 ─────────────────────────────────────────────────────────────
 
-function New-ChampConn { $c = New-Object -ComObject ADODB.Connection; $c.Open("DSN=CHAMP"); return $c }
-$Champ = New-ChampConn
+# 챔프 DB(ODBC DSN=CHAMP) 연결 — 실패하면 점점 길게(2·4·8·16·30초) 기다리며 다시 시도하고, 매번 원인을 agent.log 에 남긴다.
+# 챔프가 아직 켜지는 중이거나(부팅 직후 DB 서버 준비 전) 일시적으로 끊긴 경우를 견디기 위한 것이다. 못 붙으면 $null.
+$Script:ChampLastError = $null
+function Connect-Champ([int]$attempts = 5) {
+    $delay = 2
+    for ($i = 1; $i -le $attempts; $i++) {
+        try {
+            $c = New-Object -ComObject ADODB.Connection
+            $c.ConnectionTimeout = 30
+            $c.Open("DSN=CHAMP")
+            $Script:ChampLastError = $null
+            return $c
+        } catch {
+            $Script:ChampLastError = $_.Exception.Message
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') 챔프 DB 연결 실패($i/$attempts, 사용자=$env:USERNAME, 세션=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)): $($_.Exception.Message)" -ForegroundColor Yellow
+            if ($i -lt $attempts) { Start-Sleep -Seconds $delay; $delay = [Math]::Min($delay * 2, 30) }
+        }
+    }
+    return $null
+}
+
+# 시작할 때 최대 약 10분까지 기다린다(포스 PC를 켠 직후 챔프 DB 서버가 준비되기 전일 수 있다). 끝내 못 붙으면 안내하고 종료한다(다음 로그온 때 자동으로 다시 시작).
+$Champ = $null
+for ($round = 1; $round -le 8 -and -not $Champ; $round++) {
+    $Champ = Connect-Champ 5
+    if (-not $Champ) { Write-Host "챔프 DB에 아직 연결하지 못했습니다(대기 $round/8)." -ForegroundColor Yellow }
+}
+if (-not $Champ) {
+    $hint = "챔프 포스 DB에 연결하지 못했습니다.`n`n- 챔프 포스가 켜져 있는지(DB 서버 dbsrv8)`n- 이 프로그램을 챔프를 쓰는 같은 윈도우 계정으로 실행했는지(ODBC 'CHAMP' 설정은 계정별일 수 있음)`n`n마지막 오류: $($Script:ChampLastError)"
+    # 서버(매장 대시보드)에도 알린다 — 이 시점에는 하트비트 함수가 아직 정의되기 전이라 직접 보낸다.
+    try {
+        $errBody = @{ agentVersion = $null; caps = @("update"); lastError = "챔프 DB 연결 실패: $($Script:ChampLastError)"; lastErrorAt = (Get-Date).ToUniversalTime().ToString("o"); pending = 0; skippedNoPhone = 0 } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -TimeoutSec 10 -Body ([System.Text.Encoding]::UTF8.GetBytes($errBody)) | Out-Null
+    } catch { }
+    [System.Windows.Forms.MessageBox]::Show($hint, "포인트 관리 프로그램", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+    exit 1
+}
 Ensure-ChampQueueAndTrigger $Champ
 
-function Champ-Exec($sql) { $Champ.Execute($sql) | Out-Null }
+# 실행 중 연결이 끊기면(챔프 재시작 등) 한 번 다시 연결해서 같은 문장을 다시 실행한다.
+function Invoke-Champ($sql) {
+    try { return $Script:Champ.Execute($sql) }
+    catch {
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') 챔프 DB 연결이 끊긴 것으로 보여 다시 연결합니다: $($_.Exception.Message)" -ForegroundColor Yellow
+        $c = Connect-Champ 3
+        if (-not $c) { throw }
+        $Script:Champ = $c
+        return $Script:Champ.Execute($sql)
+    }
+}
+
+function Champ-Exec($sql) { Invoke-Champ $sql | Out-Null }
 function Champ-Query($sql) {
-    $rs = $Champ.Execute($sql)
+    $rs = Invoke-Champ $sql
     $rows = @()
     while (-not $rs.EOF) {
         $row = @{}
@@ -455,7 +502,7 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     if ($Script:SwapPending.Count -gt 0) { & $say "지금 포인트를 사용 중인 손님이 있습니다. 결제를 마친 뒤 다시 실행해주세요." $warn; return }
     try { Process-Queue } catch { Write-Host "큐 처리 오류: $_" -ForegroundColor Red }
     $left = 0
-    try { $left = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+    try { $left = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
     if ($left -gt 0) { & $say "서버에 아직 반영되지 않은 결제가 $left 건 있어 포인트를 이전하지 않았습니다.`n인터넷 연결을 확인하고 잠시 뒤 다시 실행해주세요." $warn; return }
 
     # 포스 잔액이 마이너스인 회원(이미 서버에서 차감된 사용분)은 0으로 정리한다 — 서버 이전 대상이 아니다.
@@ -589,7 +636,7 @@ function Set-AgentError([string]$msg) {
 function Send-Heartbeat {
     try {
         $pending = 0
-        try { $pending = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+        try { $pending = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
         $localVer = $null
         try { $localVer = Get-LocalAgentVersion } catch { }
         $report = $Script:UpdateReport; $Script:UpdateReport = $null
@@ -759,14 +806,14 @@ function Restore-TimedOutSwaps {
 # 처리 대기 결제가 남아 있거나 사용 조회 중인 회원은 건드리지 않는다.
 function Reset-NegativeLocal($memNo) {
     if ($Script:SwapPending.ContainsKey($memNo)) { return }
-    $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
+    $other = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
     if ($other -gt 0) { return }
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo) AND MEM_USABLE_PNT < 0"
 }
 
 function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
     if ($Script:TransferBusy) { return }
-    $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
+    $other = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
     if ($other -gt 0) { return }
     $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
     if ($cur.Count -eq 0) { return }
@@ -924,7 +971,7 @@ function Invoke-AgentUpdate([switch]$Auto) {
     if ($Auto) {
         if ($Script:TransferBusy) { $Script:UpdateReport = @{ status = "BUSY"; error = $null }; return }
         $pendingQ = 0
-        try { $pendingQ = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
+        try { $pendingQ = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
         if ($Script:SwapPending.Count -gt 0 -or $pendingQ -gt 0) { $Script:UpdateReport = @{ status = "BUSY"; error = $null }; return }
         $Script:UpdateInProgress = $true
     }
