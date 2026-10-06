@@ -10,10 +10,14 @@
 #      → 두 파일을 비교:
 #        powershell -ExecutionPolicy Bypass -File champ-survey.ps1 -Mode Diff -Label before -Label2 after
 #      차이가 없으면 "고객 조회는 DB에 흔적을 남기지 않는다"는 뜻이다.
+#   2-2) 판매(주문) 화면에서 고객이 붙는 순간을 찾기:
+#        -Mode MemTables  → 고객번호·카드번호·전화 컬럼이 있는 테이블 목록과 행수(champ-survey-memtables.txt)
+#        -Mode CountAll -Label x1 → 전체 테이블 행수(champ-survey-x1.txt). 계산대에서 [고객을 판매 건에 붙이기 직전]에 한 번,
+#        [붙인 직후(결제 전)]에 -Label x2 로 한 번 더 실행한 뒤 -Mode Diff -Label x1 -Label2 x2 로 늘어난 테이블을 확인한다.
 #   3) 같은 방식으로 포인트 사용 결제 전/후 스냅샷(-Label pay-before / pay-after)을 비교하면 결제가 바꾸는 값을 알 수 있다.
 # 결과는 이 스크립트가 있는 폴더의 champ-survey-<종류>.txt 에 저장된다(전화번호는 그대로 들어가니 외부에 올리지 말 것).
 param(
-    [ValidateSet("Catalog", "Snapshot", "Diff")][string]$Mode = "Catalog",
+    [ValidateSet("Catalog", "Snapshot", "Diff", "MemTables", "CountAll")][string]$Mode = "Catalog",
     [string]$MemNo = "",
     [string]$Label = "snap",
     [string]$Label2 = "snap2"
@@ -77,7 +81,21 @@ $conn = Open-Champ
 $all = New-Object System.Collections.Generic.List[string]
 $all.Add("챔프 조사 ($Mode) — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') — $env:COMPUTERNAME")
 
-if ($Mode -eq "Catalog") {
+if ($Mode -eq "MemTables") {
+    $all.AddRange([string[]](Section "고객번호·카드번호·전화 컬럼이 있는 테이블(MEMBER·MEMBER_POINT 제외)" $conn "SELECT t.table_name, c.column_name, c.width FROM SYSCOLUMN c JOIN SYSTABLE t ON t.table_id=c.table_id WHERE t.table_type='BASE' AND (c.column_name LIKE '%MEM_NO%' OR c.column_name LIKE '%MEM_CARD%' OR c.column_name LIKE '%CARD_NO%' OR c.column_name LIKE '%MEM_REP_TEL%' OR c.column_name LIKE '%MEM_NM%') AND t.table_name NOT IN ('MEMBER','MEMBER_POINT') ORDER BY t.table_name, c.column_name"))
+    $out = Join-Path $dir "champ-survey-memtables.txt"
+} elseif ($Mode -eq "CountAll") {
+    $names = @()
+    $rs = $conn.Execute("SELECT table_name FROM SYSTABLE WHERE table_type='BASE' AND table_name NOT LIKE 'SYS%' AND table_name NOT LIKE 'sa_%' ORDER BY table_name")
+    while (-not $rs.EOF) { $names += [string]$rs.Fields.Item(0).Value; $rs.MoveNext() }
+    $rs.Close()
+    $all.Add("=== 테이블별 행수($($names.Count)개)")
+    foreach ($n in $names) {
+        try { $r = $conn.Execute("SELECT count(*) FROM ""$n"""); $all.Add("$n = $($r.Fields.Item(0).Value)"); $r.Close() }
+        catch { $all.Add("$n = (조회 실패)") }
+    }
+    $out = Join-Path $dir "champ-survey-$Label.txt"
+} elseif ($Mode -eq "Catalog") {
     $all.AddRange([string[]](Section "MEMBER·MEMBER_POINT 컬럼" $conn "SELECT t.table_name, c.column_id, c.column_name, c.domain_id, c.width FROM SYSCOLUMN c JOIN SYSTABLE t ON t.table_id=c.table_id WHERE t.table_name IN ('MEMBER','MEMBER_POINT') ORDER BY t.table_name, c.column_id"))
     $all.AddRange([string[]](Section "전체 테이블 이름" $conn "SELECT table_name, table_type FROM SYSTABLE WHERE creator=1 OR table_type='BASE' ORDER BY table_name"))
     $all.AddRange([string[]](Section "트리거 전체(본문 포함)" $conn "SELECT tb.table_name, t.trigger_name, t.event, t.trigger_time, t.trigger_defn FROM SYSTRIGGER t JOIN SYSTABLE tb ON tb.table_id=t.table_id ORDER BY tb.table_name, t.trigger_name"))
