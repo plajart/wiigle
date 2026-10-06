@@ -7,6 +7,7 @@ import Store, { DEFAULT_POS_SCOPES } from "@/lib/models/Store";
 import Company from "@/lib/models/Company";
 import AuditLog from "@/lib/models/AuditLog";
 import { handleApiError } from "@/lib/api-utils";
+import { cleanName, assertStoreNameFree, duplicateAs } from "@/lib/name-check";
 
 // 운영자: 자기 고객사의 매장 목록 / 소유자: 전체(또는 ?companyId= 로 한 고객사만).
 // 예전엔 로그인한 누구에게나 모든 고객사의 매장이 나갔다 — 고객사별로 나눈 뒤로는 범위를 제한한다.
@@ -53,7 +54,9 @@ export async function POST(req: Request) {
   try {
     await dbConnect();
     const session = await requireCompanyAdmin();
-    const { name, franchiseCode, adminPhone, adminName, companyId } = await req.json();
+    const body = await req.json();
+    const { franchiseCode, adminPhone, adminName, companyId } = body;
+    const name = cleanName(body.name);
     if (!name) return NextResponse.json({ error: "MISSING_FIELDS" }, { status: 400 });
 
     let targetCompanyId: string;
@@ -65,7 +68,8 @@ export async function POST(req: Request) {
       targetCompanyId = chosen;
     }
 
-    const store = await Store.create({ name, companyId: targetCompanyId, franchiseCode, posIntegration: { scopes: [...DEFAULT_POS_SCOPES] } });
+    await assertStoreNameFree(targetCompanyId, name);
+    const store = await Store.create({ name, companyId: targetCompanyId, franchiseCode, posIntegration: { scopes: [...DEFAULT_POS_SCOPES] } }).catch((e) => duplicateAs(e, "STORE_NAME_IN_USE"));
     await AuditLog.create({
       storeId: store._id,
       actorType: "HQ_ADMIN",

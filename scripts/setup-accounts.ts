@@ -36,8 +36,13 @@ const BAE = { phone: "01035587496", name: "배병철" };
 const OWNER2 = { phone: "01000000000", name: "소유자" };
 const HQ_ADMIN_PHONE = "01000000001";
 const STORE_MANAGER_PHONE = "01000000002";
-const COMPANY_BANDL = "반들한식뷔페";
-const STORE_BANDL = "반들한식뷔페";
+// 고객사·매장 이름을 바꿨다면(이름은 대시보드에서 바꿀 수 있다) 환경변수로 알려준다. ID가 있으면 이름보다 ID를 우선한다.
+//   BANDL_COMPANY_ID / BANDL_STORE_ID : 고객사·매장의 _id(가장 확실)
+//   BANDL_COMPANY_NAME / BANDL_STORE_NAME : 바뀐 이름(기본값은 아래)
+const COMPANY_BANDL = process.env.BANDL_COMPANY_NAME ?? "반들한식뷔페";
+const STORE_BANDL = process.env.BANDL_STORE_NAME ?? "반들한식뷔페";
+const COMPANY_BANDL_ID = process.env.BANDL_COMPANY_ID;
+const STORE_BANDL_ID = process.env.BANDL_STORE_ID;
 const COMPANY_PARTY = "더파티";
 const STORE_PARTY = "더파티 시청점";
 
@@ -58,10 +63,28 @@ async function main() {
   console.log(APPLY ? "== 반영 모드 ==" : "== 미리보기(dry-run) — 반영하려면 --apply ==");
 
   // ── 사전 확인: 고객사·매장이 있어야 한다(migrate-to-multitenant 선행)
-  const bandlCompany = await companies.findOne({ name: COMPANY_BANDL });
-  const bandlStores = await stores.find({ name: STORE_BANDL, ...(bandlCompany ? { companyId: bandlCompany._id } : {}) }).toArray();
-  if (!bandlCompany) throw new Error(`고객사 '${COMPANY_BANDL}'가 없습니다 — scripts/migrate-to-multitenant.ts를 먼저 실행하세요`);
-  if (bandlStores.length !== 1) throw new Error(`'${COMPANY_BANDL}' 고객사에서 매장 '${STORE_BANDL}'이(가) ${bandlStores.length}개입니다(정확히 1개여야 함) — 확인 필요`);
+  // 고객사·매장 이름은 바뀔 수 있으므로 못 찾으면 목록(_id·이름)을 보여줘서 BANDL_COMPANY_ID / BANDL_STORE_ID 로 지정할 수 있게 한다.
+  const listAll = async () => {
+    const cs = await companies.find().project({ name: 1 }).toArray();
+    const ss = await stores.find().project({ name: 1, companyId: 1 }).toArray();
+    console.log("— 고객사 목록 —");
+    for (const c of cs) console.log(`  ${c._id}  ${c.name}`);
+    console.log("— 매장 목록 —");
+    for (const s of ss) console.log(`  ${s._id}  ${s.name}  (고객사 ${s.companyId})`);
+  };
+  const { ObjectId } = mongoose.mongo;
+  const bandlCompany = COMPANY_BANDL_ID ? await companies.findOne({ _id: new ObjectId(COMPANY_BANDL_ID) }) : await companies.findOne({ name: COMPANY_BANDL });
+  if (!bandlCompany) {
+    await listAll();
+    throw new Error(`고객사 ${COMPANY_BANDL_ID ? `ID ${COMPANY_BANDL_ID}` : `'${COMPANY_BANDL}'`}를 찾을 수 없습니다 — 위 목록에서 골라 BANDL_COMPANY_ID 로 지정하거나, scripts/migrate-to-multitenant.ts 를 먼저 실행했는지 확인하세요`);
+  }
+  const bandlStores = STORE_BANDL_ID
+    ? await stores.find({ _id: new ObjectId(STORE_BANDL_ID), companyId: bandlCompany._id }).toArray()
+    : await stores.find({ name: STORE_BANDL, companyId: bandlCompany._id }).toArray();
+  if (bandlStores.length !== 1) {
+    await listAll();
+    throw new Error(`고객사 '${bandlCompany.name}'에서 매장 ${STORE_BANDL_ID ? `ID ${STORE_BANDL_ID}` : `'${STORE_BANDL}'`}을(를) ${bandlStores.length}개 찾았습니다(정확히 1개여야 함) — 위 목록에서 골라 BANDL_STORE_ID 로 지정하세요`);
+  }
   const bandlStore = bandlStores[0];
 
   // ── 1. 배병철 → 소유자

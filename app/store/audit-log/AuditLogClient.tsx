@@ -20,6 +20,8 @@ const ACTION_LABEL: Record<string, string> = {
   BULK_VENDOR_IMPORT: "포스 포인트 서버 이전",
   POS_TERMINAL_MOVED: "포스기 매장 이동",
   STORE_RENAME: "매장 이름 변경",
+  COMPANY_RENAME: "고객사 이름 변경",
+  POS_TERMINAL_RENAME: "포스기 이름 변경",
   EARN_CANCEL_SHORTFALL: "적립 취소(잔액 부족)",
   CUSTOMER_PASSWORD_RESET: "고객 비밀번호 초기화",
   VENDOR_USE_SHORTFALL: "포인트 사용(잔액 부족)",

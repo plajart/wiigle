@@ -61,7 +61,9 @@ export default function ApplicationsClient() {
           text:
             data.error === "COMPANY_NAME_EXISTS"
               ? "같은 이름의 고객사가 이미 있습니다. '기존 고객사에 추가'에서 그 고객사를 선택해 승인하세요."
-              : data.error === "PHONE_ALREADY_USED"
+              : data.error === "STORE_NAME_IN_USE"
+                ? "선택한 고객사에 같은 이름의 매장이 이미 있습니다."
+                : data.error === "PHONE_ALREADY_USED"
                 ? "이미 가입된 번호입니다."
                 : `승인 실패: ${data.error}`,
           ok: false,

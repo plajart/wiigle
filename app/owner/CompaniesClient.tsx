@@ -34,7 +34,7 @@ export default function CompaniesClient() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setMsg({ text: `생성 실패: ${data.error}`, ok: false });
+        setMsg({ text: data.error === "COMPANY_NAME_IN_USE" ? "같은 이름의 고객사가 이미 있습니다. 다른 이름을 입력해 주세요." : "고객사를 만들지 못했습니다. 이름을 확인하고 다시 시도해 주세요.", ok: false });
         return;
       }
       setNewName("");
@@ -56,7 +56,7 @@ export default function CompaniesClient() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setMsg({ text: `이름 변경 실패: ${data.error}`, ok: false });
+        setMsg({ text: data.error === "COMPANY_NAME_IN_USE" ? "같은 이름의 고객사가 이미 있습니다. 다른 이름을 입력해 주세요." : "이름을 바꾸지 못했습니다. 이름을 확인하고 다시 시도해 주세요.", ok: false });
         return;
       }
       setEditingId(null);

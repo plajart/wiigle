@@ -33,6 +33,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (companyId) {
       company = await Company.findById(companyId);
       if (!company) return NextResponse.json({ error: "COMPANY_NOT_FOUND" }, { status: 404 });
+      // 기존 고객사에 붙일 때 같은 이름의 매장이 이미 있으면 막는다(고객사 안에서 매장 이름은 중복 불가)
+      if (await Store.exists({ companyId: company._id, name: application.storeName })) {
+        return NextResponse.json({ error: "STORE_NAME_IN_USE" }, { status: 409 });
+      }
     } else {
       const same = await Company.findOne({ name: application.companyName }).select("_id").lean();
       if (same) return NextResponse.json({ error: "COMPANY_NAME_EXISTS", existingCompanyId: String(same._id) }, { status: 409 });

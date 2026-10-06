@@ -25,7 +25,7 @@ export interface IStore {
 }
 
 const StoreSchema = new Schema<IStore>({
-  name: { type: String, required: true },
+  name: { type: String, required: true, trim: true },
   companyId: { type: Schema.Types.ObjectId, ref: "Company", required: true },
   franchiseCode: { type: String },
   posIntegration: {
@@ -39,5 +39,8 @@ const StoreSchema = new Schema<IStore>({
   },
   createdAt: { type: Date, default: Date.now },
 });
+
+// 매장 이름은 같은 고객사 안에서 중복 불가.
+StoreSchema.index({ companyId: 1, name: 1 }, { unique: true });
 
 export default (models.Store as mongoose.Model<IStore>) || model<IStore>("Store", StoreSchema);

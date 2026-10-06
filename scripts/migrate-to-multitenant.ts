@@ -158,6 +158,25 @@ async function main() {
     console.log("포스기 이름 중복 방지 인덱스 생성 완료");
   }
 
+  // 8. 고객사 이름(전체)·매장 이름(같은 고객사 안) 중복 확인과 유니크 인덱스 — 중복은 자동으로 바꾸지 않는다(어느 쪽 이름을 바꿀지는 사람이 정한다).
+  //    중복이 하나도 없을 때만 인덱스를 만든다. 있으면 목록을 보여주고 인덱스는 건너뛴다(앱의 새 이름 중복 검사는 그대로 동작).
+  const companyCol = mongoose.connection.collection("companies");
+  const storeCol = mongoose.connection.collection("stores");
+  const dupCompanies = await companyCol.aggregate([{ $group: { _id: "$name", ids: { $push: "$_id" }, n: { $sum: 1 } } }, { $match: { n: { $gt: 1 } } }]).toArray();
+  const dupStores = await storeCol.aggregate([{ $group: { _id: { c: "$companyId", n: "$name" }, ids: { $push: "$_id" }, n: { $sum: 1 } } }, { $match: { n: { $gt: 1 } } }]).toArray();
+  for (const d of dupCompanies) console.log(`중복 고객사 이름 '${d._id}': ${d.ids.join(", ")} — 대시보드에서 이름을 바꿔 주세요`);
+  for (const d of dupStores) console.log(`중복 매장 이름 '${d._id.n}' (고객사 ${d._id.c}): ${d.ids.join(", ")} — 대시보드에서 이름을 바꿔 주세요`);
+  if (dupCompanies.length === 0 && dupStores.length === 0) {
+    console.log("고객사·매장 이름 중복 없음");
+    if (APPLY) {
+      await companyCol.createIndex({ name: 1 }, { unique: true });
+      await storeCol.createIndex({ companyId: 1, name: 1 }, { unique: true });
+      console.log("고객사·매장 이름 중복 방지 인덱스 생성 완료");
+    }
+  } else {
+    console.log("이름 중복이 있어 유니크 인덱스는 만들지 않았습니다 — 위 이름을 바꾼 뒤 이 스크립트를 다시 실행하세요.");
+  }
+
   await mongoose.disconnect();
   console.log("완료");
 }

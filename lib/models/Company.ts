@@ -10,9 +10,12 @@ export interface ICompany {
 }
 
 const CompanySchema = new Schema<ICompany>({
-  name: { type: String, required: true },
+  name: { type: String, required: true, trim: true },
   createdAt: { type: Date, default: Date.now },
   customerWebEnabled: { type: Boolean, default: true },
 });
+
+// 고객사 이름은 중복 불가. 기존에 겹치는 이름이 있으면 인덱스 생성이 실패하므로 migrate-to-multitenant.ts 8단계로 먼저 정리한다.
+CompanySchema.index({ name: 1 }, { unique: true });
 
 export default (models.Company as mongoose.Model<ICompany>) || model<ICompany>("Company", CompanySchema);

@@ -5,6 +5,7 @@ import Company from "@/lib/models/Company";
 import Store from "@/lib/models/Store";
 import User from "@/lib/models/User";
 import { handleApiError } from "@/lib/api-utils";
+import { cleanName, assertCompanyNameFree, duplicateAs } from "@/lib/name-check";
 
 // 소유자: 고객사 목록(소속 매장 수·배정된 운영자 수 포함).
 export async function GET() {
@@ -39,9 +40,10 @@ export async function POST(req: Request) {
     await dbConnect();
     await requireOwner();
     const { name } = await req.json();
-    const trimmed = typeof name === "string" ? name.trim() : "";
+    const trimmed = cleanName(name);
     if (!trimmed) return NextResponse.json({ error: "NAME_REQUIRED" }, { status: 400 });
-    const company = await Company.create({ name: trimmed });
+    await assertCompanyNameFree(trimmed);
+    const company = await Company.create({ name: trimmed }).catch((e) => duplicateAs(e, "COMPANY_NAME_IN_USE"));
     return NextResponse.json({ ok: true, company: { _id: String(company._id), name: company.name } });
   } catch (e) {
     return handleApiError(e);

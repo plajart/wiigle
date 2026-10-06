@@ -76,7 +76,8 @@ export function ManagersPanel({ store, onRenamed, startEditing = false }: { stor
       body: JSON.stringify({ name: editName }),
     });
     if (!res.ok) {
-      setMsg({ text: "이름을 바꾸지 못했습니다. 이름을 확인하고 다시 시도해 주세요.", ok: false });
+      const d = await res.json().catch(() => ({}));
+      setMsg({ text: d.error === "STORE_NAME_IN_USE" ? "이 고객사에 같은 이름의 매장이 이미 있습니다." : "이름을 바꾸지 못했습니다. 이름을 확인하고 다시 시도해 주세요.", ok: false });
       return;
     }
     setEditing(false);
@@ -179,7 +180,7 @@ export default function StoresClient({ isOwner }: { isOwner: boolean }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setCreateMsg({ text: `생성 실패: ${data.error}`, ok: false });
+        setCreateMsg({ text: data.error === "STORE_NAME_IN_USE" ? "이 고객사에 같은 이름의 매장이 이미 있습니다. 다른 이름을 입력해 주세요." : "매장을 만들지 못했습니다. 입력을 확인하고 다시 시도해 주세요.", ok: false });
         return;
       }
       let text = "매장을 만들었습니다.";
