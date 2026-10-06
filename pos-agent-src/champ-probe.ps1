@@ -5,11 +5,14 @@
 #   -Mode Ui  : 챔프 창들의 입력칸 글자를 0.2초마다 읽어, 숫자만 있는 글자(전화번호가 타이핑되는 모습)가 바뀔 때마다 시각과 함께 기록한다.
 #               → 입력하는 순간 읽을 수 있는지(=화면 입력 감지 방식이 가능한지) 알 수 있다.
 #   -Needle "SYS18195|배병철" : 고객 코드·이름·전화·카드번호 등이 화면 글자로 처음 나타나는 순간을 기록한다(이름·카드번호로 조회하는 경우를 위해).
+#   -Mode Keys: 키보드 훅(WH_KEYBOARD_LL)으로 숫자·Enter·Backspace 키만 "관찰"한다(막거나 바꾸거나 보내지 않는다).
+#               → 챔프가 앞에 있을 때(관리자 권한 챔프 포함) 우리 프로그램이 키를 볼 수 있는지, 마지막 숫자와 Enter 사이 시간이 얼마인지,
+#                 키가 외부 장치(스캐너 등)에서 들어온 것인지(injected 표시)를 확인한다. 숫자는 앞 3자리와 길이만 기록한다.
 #   -Mode Sql : DB 연결별 "마지막 실행 SQL"을 0.1초마다 읽어, MEMBER 를 조회하는 문장이 보이는지 기록한다.
 #               → 챔프가 전화번호로 실행하는 조회 SQL 의 실제 모양(어느 컬럼, 몇 번 읽는지)과 감지 가능 여부를 알 수 있다.
 # 결과: champ-probe-<모드>.txt (이 스크립트가 있는 폴더). 전화번호가 들어 있으니 외부에 올리지 말 것(이 세션 보고용으로만).
 param(
-    [ValidateSet("Ui", "Sql")][string]$Mode = "Ui",
+    [ValidateSet("Ui", "Sql", "Keys")][string]$Mode = "Ui",
     [int]$Seconds = 60,
     # 이 글자(정규식, 예: "SYS18195|배병철|01035587496|129900001024")가 들어 있는 창 글자가 나타나는 순간을 기록한다 — 고객을 선택/부착했을 때 화면 어디에 고객 정보가 뜨는지 찾는 용도.
     [string]$Needle = ""
@@ -20,7 +23,82 @@ $out = Join-Path $dir "champ-probe-$($Mode.ToLower()).txt"
 $log = New-Object System.Collections.Generic.List[string]
 function Note([string]$s) { $line = "$(Get-Date -Format 'HH:mm:ss.fff') $s"; $log.Add($line); Write-Host $line }
 
-if ($Mode -eq "Ui") {
+if ($Mode -eq "Keys") {
+    Add-Type @"
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
+public class KeyProbe {
+    delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential)] struct KBD { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int x; public int y; }
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, HookProc p, IntPtr mod, uint tid);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
+    [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint a, uint b);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+    public static ConcurrentQueue<string> Q = new ConcurrentQueue<string>();
+    public static string HookError = "";
+    static HookProc proc; static IntPtr hook; static Thread th;
+    public static void Start() { th = new Thread(Run); th.IsBackground = true; th.Start(); }
+    static void Run() {
+        proc = Callback;
+        hook = SetWindowsHookEx(13, proc, GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName), 0);
+        if (hook == IntPtr.Zero) { HookError = "SetWindowsHookEx 실패(오류 " + Marshal.GetLastWin32Error() + ")"; return; }
+        MSG m; while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { }
+    }
+    static IntPtr Callback(int n, IntPtr w, IntPtr l) {
+        if (n >= 0) {
+            int msg = w.ToInt32();
+            if (msg == 0x100 || msg == 0x104) {
+                KBD k = (KBD)Marshal.PtrToStructure(l, typeof(KBD));
+                uint vk = k.vkCode;
+                if ((vk >= 0x30 && vk <= 0x39) || (vk >= 0x60 && vk <= 0x69) || vk == 0x0D || vk == 0x08) {
+                    uint pid = 0; GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+                    Q.Enqueue(DateTime.Now.Ticks + "|" + vk + "|" + k.flags + "|" + pid);
+                }
+            }
+        }
+        return CallNextHookEx(hook, n, w, l);
+    }
+}
+"@
+    Note "키 관찰 진단 시작 — ${Seconds}초 동안 챔프(앞 창)에서 평소처럼 키패드로 전화번호를 입력하고 Enter 를 눌러 주세요(결제·저장 금지)."
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    Note "이 진단 프로세스 관리자 권한: $isAdmin"
+    [KeyProbe]::Start()
+    Start-Sleep -Milliseconds 500
+    if ([KeyProbe]::HookError) { Note "훅 설치 오류: $([KeyProbe]::HookError)" }
+    $procNames = @{}
+    $digits = ""; $lastTicks = 0; $injected = $false; $lastPid = 0
+    $end = (Get-Date).AddSeconds($Seconds)
+    $seen = 0
+    while ((Get-Date) -lt $end) {
+        $line = $null
+        while ([KeyProbe]::Q.TryDequeue([ref]$line)) {
+            $seen++
+            $f = $line.Split('|'); $ticks = [int64]$f[0]; $vk = [int]$f[1]; $flags = [int]$f[2]; $fpid = [string]$f[3]
+            if (-not $procNames.ContainsKey($fpid)) { try { $procNames[$fpid] = (Get-Process -Id ([int]$fpid) -ErrorAction Stop).ProcessName } catch { $procNames[$fpid] = "?" } }
+            $inj = (($flags -band 0x10) -ne 0) -or (($flags -band 0x02) -ne 0)
+            if ($vk -ge 0x30 -and $vk -le 0x39) { $digits += [string]($vk - 0x30); $lastTicks = $ticks; $injected = $inj; $lastPid = $fpid }
+            elseif ($vk -ge 0x60 -and $vk -le 0x69) { $digits += [string]($vk - 0x60); $lastTicks = $ticks; $injected = $inj; $lastPid = $fpid }
+            elseif ($vk -eq 0x08) { if ($digits.Length -gt 0) { $digits = $digits.Substring(0, $digits.Length - 1) } }
+            elseif ($vk -eq 0x0D) {
+                $gap = if ($lastTicks -gt 0) { [int](($ticks - $lastTicks) / 10000) } else { -1 }
+                $shape = if ($digits.Length -ge 3) { $digits.Substring(0, 3) + "…" } else { "(짧음)" }
+                Note "Enter: 앞 창=$($procNames[$fpid]) / 직전 숫자열 $($digits.Length)자리 $shape / 마지막 숫자→Enter ${gap}ms / 외부장치·주입 표시=$injected"
+                $digits = ""
+            }
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    Note "관찰한 키 수: $seen. 0이면 챔프가 앞에 있을 때 훅이 키를 못 받는 것(권한 문제 가능성)이다."
+}
+elseif ($Mode -eq "Ui") {
     Add-Type @"
 using System;
 using System.Text;
