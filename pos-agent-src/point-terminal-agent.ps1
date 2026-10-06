@@ -458,6 +458,9 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     try { $left = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
     if ($left -gt 0) { & $say "서버에 아직 반영되지 않은 결제가 $left 건 있어 포인트를 이전하지 않았습니다.`n인터넷 연결을 확인하고 잠시 뒤 다시 실행해주세요." $warn; return }
 
+    # 포스 잔액이 마이너스인 회원(이미 서버에서 차감된 사용분)은 0으로 정리한다 — 서버 이전 대상이 아니다.
+    try { Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_USABLE_PNT < 0" } catch { Write-Host "마이너스 잔액 정리 실패(무시): $_" }
+
     Write-Host "=== 포인트 서버 이전을 시작합니다 ===" -ForegroundColor Cyan
     $members = Champ-Query "SELECT MEM_NO, MEM_NM, MEM_TEL_1, MEM_REP_TEL, MEM_CARD_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_USABLE_PNT > 0"
     if ($members.Count -eq 0) {
@@ -673,7 +676,7 @@ function Show-RedeemPopup {
         $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = [double]$res.availableBalance; at = Get-Date; phone = $phone }
         Send-TransferLog "LOOKUP_TO_POS" $phone ([double]$res.availableBalance) $localBefore $newLocal "사용 조회: 서버 포인트를 포스 화면에 더함" ""
 
-        $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 더했습니다(화면 표시 $([int]$newLocal)원).`n계산원님, 챔프에서 포인트결제를 진행하세요."
+        $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 더했습니다(화면 표시 $([int]$newLocal)원).`n챔프 고객 관리 창이 이미 열려 있다면 [조회]를 다시 눌러 잔여 포인트가 바뀐 것을 확인한 뒤 포인트결제를 진행하세요."
         } catch {
             # 챔프(포스DB) 조회·수정이 실패한 경우 — 화면이 멈추거나 오류창이 뜨지 않고 안내만 보여준다.
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 포스DB 처리 실패(사용 조회): $_" -ForegroundColor Red
@@ -728,6 +731,16 @@ function Restore-TimedOutSwaps {
 
 # 결제가 처리된 회원에게 포스에 남아 있는 예전 포인트(전화번호가 없어 옮기지 못했다가 번호가 등록된 경우 등)가 있으면 그 자리에서 서버로 옮긴다.
 # 같은 회원의 처리 대기 결제가 남아 있으면(그 적립분이 포스 잔액에 섞여 있어 이중 반영된다) 하지 않는다. 같은 날 같은 금액은 서버가 한 번만 반영한다.
+# 포스 잔액이 마이너스로 남은 회원을 0으로 되돌린다 — 챔프는 [포인트 사용] 조회 없이도 포인트결제를 허용해 포스 잔액이 마이너스가 되고(예: -1,500),
+# 그 사용분은 이미 서버에서 차감됐다(결제 처리). 마이너스가 남아 있으면 다음 사용 조회 때 서버 포인트에서 그만큼이 빠져 보이므로 정리한다.
+# 처리 대기 결제가 남아 있거나 사용 조회 중인 회원은 건드리지 않는다.
+function Reset-NegativeLocal($memNo) {
+    if ($Script:SwapPending.ContainsKey($memNo)) { return }
+    $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
+    if ($other -gt 0) { return }
+    Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo) AND MEM_USABLE_PNT < 0"
+}
+
 function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
     $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
     if ($other -gt 0) { return }
@@ -816,6 +829,7 @@ function Process-Queue {
             Restore-SwappedIfDone $memNo
             Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
             # 이 회원의 포스에 남은 예전 포인트(번호가 뒤늦게 등록된 경우 등)가 있으면 이 결제 처리와 함께 서버로 옮긴다(실패해도 결제 처리에는 영향 없음 — 다음 결제·수동 이전 때 다시).
+            if (-not $Script:SwapPending.ContainsKey($memNo)) { try { Reset-NegativeLocal $memNo } catch { } }
             if ($phone -and -not $Script:SwapPending.ContainsKey($memNo)) { try { Move-LeftoverToServer $memNo $phone $r.MEMP_CARD_NO } catch { Write-Host "남은 포인트 이전 보류: $_" } }
         } catch {
             $qerr = $_
