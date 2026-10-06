@@ -4,12 +4,15 @@
 # [고객 조회 → 전화번호 입력 → 조회/선택 → 실적 화면 열기]를 평소처럼 한 번 한다(결제·저장은 하지 않는다).
 #   -Mode Ui  : 챔프 창들의 입력칸 글자를 0.2초마다 읽어, 숫자만 있는 글자(전화번호가 타이핑되는 모습)가 바뀔 때마다 시각과 함께 기록한다.
 #               → 입력하는 순간 읽을 수 있는지(=화면 입력 감지 방식이 가능한지) 알 수 있다.
+#   -Needle "SYS18195|배병철" : 고객 코드·이름·전화·카드번호 등이 화면 글자로 처음 나타나는 순간을 기록한다(이름·카드번호로 조회하는 경우를 위해).
 #   -Mode Sql : DB 연결별 "마지막 실행 SQL"을 0.1초마다 읽어, MEMBER 를 조회하는 문장이 보이는지 기록한다.
 #               → 챔프가 전화번호로 실행하는 조회 SQL 의 실제 모양(어느 컬럼, 몇 번 읽는지)과 감지 가능 여부를 알 수 있다.
 # 결과: champ-probe-<모드>.txt (이 스크립트가 있는 폴더). 전화번호가 들어 있으니 외부에 올리지 말 것(이 세션 보고용으로만).
 param(
     [ValidateSet("Ui", "Sql")][string]$Mode = "Ui",
-    [int]$Seconds = 60
+    [int]$Seconds = 60,
+    # 이 글자(정규식, 예: "SYS18195|배병철|01035587496|129900001024")가 들어 있는 창 글자가 나타나는 순간을 기록한다 — 고객을 선택/부착했을 때 화면 어디에 고객 정보가 뜨는지 찾는 용도.
+    [string]$Needle = ""
 )
 $ErrorActionPreference = "Stop"
 $dir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -82,6 +85,10 @@ public class ProbeWin {
                 # 새로 뜨거나 제목이 바뀐 최상위 창(결제창·포인트 사용창 등이 열리는 순간)을 기록
                 if (-not $seenTop.ContainsKey($key)) { Note "새 창: 프로세스=$($procNames[$p[1]]) 클래스=$cls 제목='$txt'" }
                 elseif ($seenTop[$key] -ne $txt) { Note "창 제목 변화: 프로세스=$($procNames[$p[1]]) 클래스=$cls 제목='$($seenTop[$key])' → '$txt'" }
+            }
+            if ($Needle -and $txt -match $Needle) {
+                $nk = "N|$($p[1])|$($p[2])"
+                if ($last[$nk] -ne $txt) { Note "고객 정보 표시: 프로세스=$($procNames[$p[1]]) 클래스=$cls 글자='$txt'"; $last[$nk] = $txt }
             }
             if ($txt -notmatch '^[0-9\- ]{1,15}$') { continue }   # 숫자만 있는 글자(타이핑 중인 전화번호 등)만 기록
             $dk = "$($p[1])|$($p[2])"
