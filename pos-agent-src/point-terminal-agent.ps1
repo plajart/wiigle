@@ -466,10 +466,6 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
         return
     }
 
-    # 옮기기 전에 원본을 파일로 백업 — 목적은 "프로그램을 처음 설치하는 시점에 이미 있던 포인트"를 기록해 두는 것이므로,
-    # 서버에 이 포스기의 최초 이전 기록이 없을 때(첫 이전)만 만든다. 이후 이전에는 백업하지 않는다.
-    if (-not $initialDone) { Export-PointBackupCsv $members "initial" | Out-Null }
-
     $withPhone = @()
     $noPhoneMembers = @()
     foreach ($m in $members) {
@@ -477,7 +473,16 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
         if ($phone) { $withPhone += @{ memNo = $m.MEM_NO; phone = $phone; cardNo = $m.MEM_CARD_NO; balance = [double]$m.MEM_USABLE_PNT } }
         else { $noPhoneMembers += $m }
     }
-    Write-Host "전화번호 있는 회원 $($withPhone.Count)명 / 전화번호가 없어 옮길 수 없는 회원 $($noPhoneMembers.Count)명"
+    Write-Host "전화번호 있는 회원 $($withPhone.Count)명 / 전화번호가 없어 포스에 그대로 두는 회원 $($noPhoneMembers.Count)명"
+
+    # 서버로 옮길 회원(전화번호가 있는 회원)의 원본을 파일로 백업 — 목적은 "프로그램을 처음 설치하는 시점에 이미 있던 포인트"를 기록해 두는 것이므로,
+    # 서버에 이 포스기의 최초 이전 기록이 없을 때(첫 이전)만 만든다. 이후 이전에는 백업하지 않는다.
+    # 전화번호가 없는 회원의 포인트는 건드리지 않고(백업·0 처리 없음) 포스에 그대로 둔다 — 전화번호가 등록되면 다음 이전 때, 또는 그 회원이 결제할 때 서버로 옮겨진다.
+    if (-not $initialDone -and $withPhone.Count -gt 0) {
+        $withPhoneNos = @($withPhone | ForEach-Object { [string]$_.memNo })
+        $backupMembers = @($members | Where-Object { $withPhoneNos -contains [string]$_.MEM_NO })
+        Export-PointBackupCsv $backupMembers "initial" | Out-Null
+    }
 
     # 묶음 번호 — 같은 이전을 다시 시도하면 같은 번호를 쓴다(서버가 중복 반영하지 않게). 끝까지 성공하면 지운다.
     $batchId = $null
@@ -509,11 +514,8 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
         }
     }
 
-    # 전화번호가 없어 서버로 옮길 수 없는 회원 — 서버 이전이 전부 성공했을 때만(백업은 이미 저장됨) 0으로 비운다.
+    # 전화번호가 없는 회원은 0으로 지우지 않는다(포스에 그대로 남아 번호가 등록되면 처리된다).
     if ($failed -eq 0) {
-        foreach ($m in $noPhoneMembers) {
-            Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $m.MEM_NO)"
-        }
         Remove-Item $TransferBatchPath -Force -ErrorAction SilentlyContinue
         if (-not $initialDone) {
             Send-TransferLog "INITIAL_DONE" "" $totalAmount $null $null "최초 포인트 서버 이전 완료(회원 $imported 명, 합계 $totalAmount)" ""
@@ -522,7 +524,7 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     }
     $summary = @{ ranAt = (Get-Date).ToString("o"); memberCount = $members.Count; withPhone = $withPhone.Count; noPhone = $noPhoneMembers.Count; imported = $imported; alreadyApplied = $already; skippedInvalidPhone = $skipped; totalAmount = $totalAmount; failedBatches = $failed }
     $summary | ConvertTo-Json | Out-File -Encoding UTF8 "$PSScriptRoot\transfer-last.json"
-    $resultText = "포인트 서버 이전 결과`n새로 이전 $imported 명 / 이미 반영됨 $already 명 / 합계 $totalAmount 포인트`n전화번호가 없어 옮기지 못한 회원 $($noPhoneMembers.Count)명 (실패 묶음 $failed)"
+    $resultText = "포인트 서버 이전 결과`n새로 이전 $imported 명 / 이미 반영됨 $already 명 / 합계 $totalAmount 포인트`n전화번호가 없는 회원 $($noPhoneMembers.Count)명의 포인트는 포스에 그대로 남겨 두었습니다(번호가 등록되면 다음 이전 때 또는 그 회원이 결제할 때 서버로 옮겨집니다). (실패 묶음 $failed)"
     if ($failed -gt 0) { $resultText += "`n`n일부 묶음이 실패했습니다. 인터넷 연결을 확인하고 다시 실행하면 이어서 처리됩니다." }
     Write-Host $resultText -ForegroundColor Green
     & $say $resultText $(if ($failed -gt 0) { $warn } else { $info })
@@ -654,6 +656,14 @@ function Show-RedeemPopup {
             return
         }
         $memNo = $members[0].MEM_NO
+        # 이 회원의 포스에 예전 포인트가 남아 있으면(번호가 뒤늦게 등록된 경우 등) 먼저 서버로 옮긴다 — 결제가 끝나 포스 잔액을 0으로 되돌릴 때 사라지지 않게.
+        if ([double]$members[0].MEM_USABLE_PNT -gt 0) {
+            try {
+                Move-LeftoverToServer $memNo $phone $null
+                $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
+                $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
+            } catch { Write-Host "남은 포인트를 서버로 옮기지 못했습니다(그대로 두고 진행): $_" }
+        }
         # 덮어쓰기가 아니라 더하기: 이 조회 시점에 로컬 값이 이미 0이 아닐 수 있다(직전에
         # 발생한 적립이 아직 큐 처리를 못 받아 로컬에 남아있는 경우 등) — 덮어쓰면 그 값을
         # 그냥 날려버리게 되므로, 로컬 기존값 + 서버 가용잔액을 합쳐서 반영한다(2026-09-28).
@@ -713,6 +723,27 @@ function Restore-TimedOutSwaps {
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 사용 대기 시간초과 — $memNo 원복"
             Restore-SwappedIfDone $memNo
         }
+    }
+}
+
+# 결제가 처리된 회원에게 포스에 남아 있는 예전 포인트(전화번호가 없어 옮기지 못했다가 번호가 등록된 경우 등)가 있으면 그 자리에서 서버로 옮긴다.
+# 같은 회원의 처리 대기 결제가 남아 있으면(그 적립분이 포스 잔액에 섞여 있어 이중 반영된다) 하지 않는다. 같은 날 같은 금액은 서버가 한 번만 반영한다.
+function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
+    $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
+    if ($other -gt 0) { return }
+    $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
+    if ($cur.Count -eq 0) { return }
+    $bal = [double]$cur[0].MEM_USABLE_PNT
+    if ($bal -le 0) { return }
+    $safe = ("$memNo" -replace '[^A-Za-z0-9]', '')
+    if ($safe.Length -gt 20) { $safe = $safe.Substring(0, 20) }
+    $batchId = "LEFT-$safe-" + (Get-Date).ToString("yyyyMMdd")
+    $item = @{ phone = $phone; cardNo = $cardNo; balance = $bal } | ConvertTo-Json -Compress
+    $json = '{"batchId":"' + $batchId + '","entries":[' + $item + ']}'
+    $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -TimeoutSec 15 -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
+    if ($res.imported -gt 0 -or $res.alreadyLinked -gt 0) {
+        Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $bal < 0 THEN 0 ELSE MEM_USABLE_PNT - $bal END WHERE MEM_NO=$(Sql-Str $memNo)"
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 포스에 남아 있던 포인트 $bal 을(를) 서버로 옮겼습니다."
     }
 }
 
@@ -784,6 +815,8 @@ function Process-Queue {
 
             Restore-SwappedIfDone $memNo
             Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
+            # 이 회원의 포스에 남은 예전 포인트(번호가 뒤늦게 등록된 경우 등)가 있으면 이 결제 처리와 함께 서버로 옮긴다(실패해도 결제 처리에는 영향 없음 — 다음 결제·수동 이전 때 다시).
+            if ($phone -and -not $Script:SwapPending.ContainsKey($memNo)) { try { Move-LeftoverToServer $memNo $phone $r.MEMP_CARD_NO } catch { Write-Host "남은 포인트 이전 보류: $_" } }
         } catch {
             $qerr = $_
             $qstatus = 0
