@@ -39,17 +39,17 @@ public class ProbeWin {
         SendMessageTimeout(h, WM_GETTEXT, (IntPtr)512, sb, SMTO_ABORTIFHUNG, 100, out r);
         return sb.ToString();
     }
-    // 각 줄: pid|hwnd|클래스|글자  (보이는 창과 그 자식 컨트롤 중 글자가 있는 것)
+    // 각 줄: T(최상위)/C(자식)|pid|hwnd|클래스|글자  (보이는 창과 그 자식 컨트롤 중 글자가 있는 것)
     public static List<string> Dump() {
         List<string> res = new List<string>();
         EnumProc top = delegate (IntPtr h, IntPtr l) {
             if (!IsWindowVisible(h)) return true;
             uint pid; GetWindowThreadProcessId(h, out pid);
             StringBuilder cn = new StringBuilder(128); GetClassName(h, cn, 128);
-            res.Add(pid + "|" + h.ToInt64() + "|" + cn + "|" + TextOf(h));
+            res.Add("T|" + pid + "|" + h.ToInt64() + "|" + cn + "|" + TextOf(h));
             EnumProc child = delegate (IntPtr c, IntPtr l2) {
                 StringBuilder cc = new StringBuilder(128); GetClassName(c, cc, 128);
-                res.Add(pid + "|" + c.ToInt64() + "|" + cc + "|" + TextOf(c));
+                res.Add("C|" + pid + "|" + c.ToInt64() + "|" + cc + "|" + TextOf(c));
                 return true;
             };
             EnumChildWindows(h, child, IntPtr.Zero);
@@ -65,22 +65,33 @@ public class ProbeWin {
     Get-Process | ForEach-Object { $procNames[[string]$_.Id] = $_.ProcessName }
     $first = [ProbeWin]::Dump()
     $classes = @{}
-    foreach ($row in $first) { $p = $row.Split('|', 4); $k = "$($procNames[$p[0]]) / $($p[2])"; if ($classes.ContainsKey($k)) { $classes[$k]++ } else { $classes[$k] = 1 } }
+    foreach ($row in $first) { $p = $row.Split('|', 5); $k = "$($procNames[$p[1]]) / $($p[3])"; if ($classes.ContainsKey($k)) { $classes[$k]++ } else { $classes[$k] = 1 } }
     Note "시작 시점 창/컨트롤 종류(프로세스 / 클래스 : 개수)"
     $classes.GetEnumerator() | Sort-Object Name | ForEach-Object { Note "  $($_.Name) : $($_.Value)" }
     $last = @{}
+    $seenTop = @{}
+    foreach ($row in $first) { $p = $row.Split('|', 5); if ($p[0] -eq 'T') { $seenTop["$($p[1])|$($p[2])"] = $p[4] } }
     $end = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $end) {
+        $nowTop = @{}
         foreach ($row in [ProbeWin]::Dump()) {
-            $p = $row.Split('|', 4)
-            $txt = $p[3]
+            $p = $row.Split('|', 5)
+            $level = $p[0]; $key = "$($p[1])|$($p[2])"; $cls = $p[3]; $txt = $p[4]
+            if ($level -eq 'T') {
+                $nowTop[$key] = $txt
+                # 새로 뜨거나 제목이 바뀐 최상위 창(결제창·포인트 사용창 등이 열리는 순간)을 기록
+                if (-not $seenTop.ContainsKey($key)) { Note "새 창: 프로세스=$($procNames[$p[1]]) 클래스=$cls 제목='$txt'" }
+                elseif ($seenTop[$key] -ne $txt) { Note "창 제목 변화: 프로세스=$($procNames[$p[1]]) 클래스=$cls 제목='$($seenTop[$key])' → '$txt'" }
+            }
             if ($txt -notmatch '^[0-9\- ]{1,15}$') { continue }   # 숫자만 있는 글자(타이핑 중인 전화번호 등)만 기록
-            $key = "$($p[0])|$($p[1])"
-            if ($last[$key] -ne $txt) {
-                Note "숫자 글자 변화: 프로세스=$($procNames[$p[0]]) 클래스=$($p[2]) hwnd=$($p[1]) 글자='$txt'"
-                $last[$key] = $txt
+            $dk = "$($p[1])|$($p[2])"
+            if ($last[$dk] -ne $txt) {
+                Note "숫자 글자 변화: 프로세스=$($procNames[$p[1]]) 클래스=$cls hwnd=$($p[2]) 글자='$txt'"
+                $last[$dk] = $txt
             }
         }
+        foreach ($k in $nowTop.Keys) { $seenTop[$k] = $nowTop[$k] }
+        foreach ($k in @($seenTop.Keys)) { if (-not $nowTop.ContainsKey($k)) { Note "창 닫힘: $($seenTop[$k])"; $seenTop.Remove($k) } }
         Start-Sleep -Milliseconds 200
     }
     Note "종료. 위 '숫자 글자 변화' 줄이 전혀 없으면 이 방식으로는 입력칸 글자를 읽을 수 없는 것이다."
