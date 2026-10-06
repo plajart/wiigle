@@ -1030,7 +1030,13 @@ function Inject-ServerBalance([string]$phone) {
     $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
     if ($members.Count -eq 0) { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 챔프에 이 번호의 회원이 없어 건너뜀(****$tail)"; return }   # 입력 중이거나 비회원
     $memNo = $members[0].MEM_NO
-    if ($Script:SwapPending.ContainsKey($memNo)) { return }   # 이미 반영 중
+    if ($Script:SwapPending.ContainsKey($memNo)) {
+        # 이미 반영돼 있는 손님을 다시 조회한 경우 — 값을 다시 더하지 않고 유효시간만 연장하며 알려 준다.
+        $Script:SwapPending[$memNo].at = Get-Date
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 이미 반영 중이라 유효시간만 연장(MEM_NO=$memNo)"
+        Show-ResultToast "통합 포인트 $([int]$Script:SwapPending[$memNo].injected)원이 이미 반영돼 있습니다`n(유효시간 연장)"
+        return
+    }
     try {
         $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -TimeoutSec 6 `
             -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
