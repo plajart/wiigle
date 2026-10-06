@@ -11,14 +11,14 @@ export interface IRedeemLock {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
   storeId: Types.ObjectId;
-  terminalId: Types.ObjectId;
+  terminalId?: Types.ObjectId; // 포스기가 건 잠금. 웹 관리모드 수동 사용이 건 잠금은 없다
   lockedAt: Date;
 }
 
 const RedeemLockSchema = new Schema<IRedeemLock>({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true },
   storeId: { type: Schema.Types.ObjectId, ref: "Store", required: true },
-  terminalId: { type: Schema.Types.ObjectId, ref: "PosTerminal", required: true },
+  terminalId: { type: Schema.Types.ObjectId, ref: "PosTerminal" },
   lockedAt: { type: Date, default: Date.now, expires: 200 },
 });
 

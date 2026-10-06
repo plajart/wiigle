@@ -100,6 +100,8 @@ export default function PosClient() {
       return "이 매장은 아직 해당 POS 연동 동의가 되어있지 않습니다 — POS 연동 동의 화면에서 켜주세요.";
     }
     if (code === "CUSTOMER_NOT_FOUND") return "가입된 고객을 찾을 수 없는 번호입니다.";
+    if (code === "REDEEM_IN_PROGRESS_ELSEWHERE") return "이 손님은 지금 다른 곳(포스기 또는 다른 처리)에서 포인트를 사용 중입니다. 잠시 후 다시 시도해주세요.";
+    if (code === "NO_STORE_CONTEXT") return "매장 관리모드로 들어간 뒤에 처리할 수 있습니다.";
     if (code === "INSUFFICIENT_BALANCE") return "포인트 잔액이 부족합니다 (통합 잔액 기준).";
     return code ?? "오류가 발생했습니다.";
   }
@@ -107,12 +109,12 @@ export default function PosClient() {
   return (
     <div>
       <div className="page-header">
-        <div className="eyebrow">매장 관리자</div>
+        <div className="eyebrow">매장 관리모드</div>
         <h1>POS 결제 터미널</h1>
         <div className="desc">
           카운터 단말에 프로그램을 설치했다면 적립·사용은 결제 중 자동으로 처리됩니다. 이 화면은 전화번호로 직접
           조회·적립·사용을 처리하는 수동 보조 도구입니다. 포인트 사용 시 확인된 금액은 카운터 단말(챔프)의 할인란에
-          직접 입력해 결제를 진행하세요.
+          직접 입력해 결제를 진행하세요. 이 화면에서 처리한 적립·사용은 포스 프로그램에는 기록되지 않으므로, 같은 결제를 포스에서도 적립·사용하지 않았는지 확인하세요(이중 처리 방지).
         </div>
       </div>
 

@@ -346,12 +346,20 @@ export async function getAvailableForStore(customerId: string, storeId: string) 
  * 계산한 적립액이 에이전트로 자동 반영되고(posAgentEarn), 이 수동 적립은 그 보조 수단이다.
  * write_earn 스코프가 동의된 매장에서만 허용.
  */
+function actorTypeOf(role?: string): "STORE_ADMIN" | "HQ_ADMIN" {
+  return role === "owner" || role === "admin" ? "HQ_ADMIN" : "STORE_ADMIN";
+}
+function actorLabel(role?: string): string {
+  return role === "owner" ? "본사" : role === "admin" ? "고객사 운영자" : "매장 관리자";
+}
+
 export async function posEarn(
   storeId: string,
   customerId: string,
   earnAmountInput: number,
   actorStaffId: string,
-  clientTxnId?: string
+  clientTxnId?: string,
+  actorRole?: string
 ) {
   if (!Number.isFinite(earnAmountInput) || earnAmountInput <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
@@ -379,7 +387,8 @@ export async function posEarn(
       status: "CONFIRMED",
       approvedBy: actorStaffId,
       clientTxnId,
-      reason: "POS 수동 적립 (계산원 입력)",
+      recordedAt: new Date(),
+      reason: `웹 관리모드 수동 적립 (${actorLabel(actorRole)})`,
     });
   } catch (e) {
     if (clientTxnId && (e as { code?: number }).code === 11000) {
@@ -394,12 +403,13 @@ export async function posEarn(
 
   await AuditLog.create({
     storeId,
-    actorType: "AGENT",
+    actorType: actorTypeOf(actorRole),
     actorId: actorStaffId,
     action: "POS_EARN",
     scope: "write_earn",
-    meta: { customerId, earnAmount, eventId: event._id },
+    meta: { customerId, earnAmount, eventId: event._id, via: "WEB_MANUAL" },
   });
+  publishPointChange({ companyId, storeId, userId: customerId }, "EARN");
 
   return { event, earnAmount };
 }
@@ -415,9 +425,10 @@ export async function posCheckout(
   customerId: string,
   amount: number,
   actorStaffId: string,
-  clientTxnId?: string
+  clientTxnId?: string,
+  actorRole?: string
 ) {
-  if (amount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
+  if (!Number.isFinite(amount) || amount <= 0) throw new ApiError(400, "INVALID_AMOUNT");
   const store = await Store.findById(storeId);
   if (!store) throw new ApiError(404, "STORE_NOT_FOUND");
   const companyId = String(store.companyId);
@@ -431,6 +442,17 @@ export async function posCheckout(
     if (dup) return { event: dup, breakdown: (dup as unknown as { meta?: { breakdown: unknown } }).meta?.breakdown ?? [] };
   }
 
+  // 다른 곳(포스기 사용 조회 중 또는 다른 웹 처리)이 이 손님의 포인트를 사용 처리 중이면 이중 사용을 막기 위해 거부한다.
+  // 같은 잠금을 쓰므로, 웹에서 사용 처리하는 동안에는 포스기의 사용 조회도 막힌다.
+  let lockId: Types.ObjectId | null = null;
+  try {
+    const lock = await RedeemLock.create({ userId: customerId, storeId });
+    lockId = lock._id;
+  } catch (e) {
+    if ((e as { code?: number }).code === 11000) throw new RedeemBusyError(await redeemLockHolderInfo(customerId));
+    throw e;
+  }
+  try {
   const breakdown = await debitAvailable(customerId, storeId, amount);
   if (!breakdown) throw new ApiError(400, "INSUFFICIENT_BALANCE");
 
@@ -445,7 +467,8 @@ export async function posCheckout(
       status: "CONFIRMED",
       approvedBy: actorStaffId,
       clientTxnId,
-      reason: "POS_CHECKOUT",
+      recordedAt: new Date(),
+      reason: `POS_CHECKOUT 웹 관리모드 수동 사용 (${actorLabel(actorRole)})`,
     });
   } catch (e) {
     if (clientTxnId && (e as { code?: number }).code === 11000) {
@@ -470,14 +493,18 @@ export async function posCheckout(
 
   await AuditLog.create({
     storeId,
-    actorType: "AGENT",
+    actorType: actorTypeOf(actorRole),
     actorId: actorStaffId,
     action: "POS_CHECKOUT",
     scope: "write_redeem",
-    meta: { customerId, amount, breakdown, eventId: event._id },
+    meta: { customerId, amount, breakdown, eventId: event._id, via: "WEB_MANUAL" },
   });
+  publishPointChange({ companyId, storeId, userId: customerId }, "USE");
 
   return { event, breakdown };
+  } finally {
+    if (lockId) await RedeemLock.deleteOne({ _id: lockId }).catch(() => {});
+  }
 }
 
 export type VendorSyncEvent = {
@@ -973,6 +1000,18 @@ export async function bulkImportLegacyBalances(
  * 화면에 띄운 뒤 각각 사용해버리면 서버 잔액은 하나인데 이중사용이 생길 수 있어(2026-09-28),
  * 조회 시점에 고객 단위로 잠근다 — 이미 다른 포스기가 조회 중이면 거부한다.
  */
+/** 이 고객을 지금 사용 처리 중인 곳(고객사·매장·포스기 또는 웹 관리모드) — 안내문에 쓴다. */
+async function redeemLockHolderInfo(customerId: string): Promise<{ companyName?: string; storeName?: string; terminalName?: string }> {
+  const holder = await RedeemLock.findOne({ userId: customerId }).lean();
+  if (!holder) return {};
+  const [hs, ht] = await Promise.all([
+    Store.findById(holder.storeId).select("name companyId").lean(),
+    holder.terminalId ? PosTerminal.findById(holder.terminalId).select("name").lean() : Promise.resolve(null),
+  ]);
+  const hc = hs ? await Company.findById(hs.companyId).select("name").lean() : null;
+  return { companyName: hc?.name, storeName: hs?.name, terminalName: ht?.name ?? "웹 관리모드" };
+}
+
 export class RedeemBusyError extends ApiError {
   holder: { companyName?: string; storeName?: string; terminalName?: string };
   constructor(holder: { companyName?: string; storeName?: string; terminalName?: string }) {
@@ -993,18 +1032,8 @@ export async function posAgentRedeemLookup(storeId: string, terminalId: string, 
       // 잠금 시간만 갱신한다. 다른 포스기가 잡고 있을 때만 이중사용 방지를 위해 거부한다.
       const held = await RedeemLock.findOneAndUpdate({ userId: customerId, terminalId }, { $set: { lockedAt: new Date() } });
       if (!held) {
-        // 다른 포스기가 이 손님을 사용 조회 중 — 어느 고객사·매장·포스기인지 알려 포스 화면 팝업에 표시한다(적립은 계속 가능).
-        const holder = await RedeemLock.findOne({ userId: customerId }).lean();
-        let holderInfo: { companyName?: string; storeName?: string; terminalName?: string } = {};
-        if (holder) {
-          const [hs, ht] = await Promise.all([
-            Store.findById(holder.storeId).select("name companyId").lean(),
-            PosTerminal.findById(holder.terminalId).select("name").lean(),
-          ]);
-          const hc = hs ? await Company.findById(hs.companyId).select("name").lean() : null;
-          holderInfo = { companyName: hc?.name, storeName: hs?.name, terminalName: ht?.name };
-        }
-        throw new RedeemBusyError(holderInfo);
+        // 다른 포스기(또는 웹 관리모드)가 이 손님을 사용 조회 중 — 어느 고객사·매장·포스기인지 알려 포스 화면 팝업에 표시한다(적립은 계속 가능).
+        throw new RedeemBusyError(await redeemLockHolderInfo(customerId));
       }
     } else {
       throw e;

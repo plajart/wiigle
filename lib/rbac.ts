@@ -53,12 +53,11 @@ export async function requireStoreManager(): Promise<SessionPayload> {
 
 // 본인이 실제로 관리하는 "내 매장"이 있어야 하는 동작(POS 터미널 결제/조회 등)에 쓴다.
 // - manager: 자기 매장.
-// - owner(본사): 슈퍼관리자라서 매장 관리자 권한을 모두 갖는다 — 매장 관리모드로 들어가 있는
-//   매장(쿠키, 권한은 매번 재검증)을 "내 매장"으로 본다. 매장에 들어가 있지 않으면 통과 못함.
-// - admin(고객사 운영자): 결제 같은 매장 운영 동작은 하지 않는다(설정·조회는 매장 관리모드에서 가능).
+// - owner(본사)·admin(고객사 운영자): 매장 관리모드로 들어가 있는 매장(쿠키, 권한은 매번 재검증 — 운영자는 자기 고객사 매장만)을
+//   "내 매장"으로 본다. 매장에 들어가 있지 않으면 통과 못함. 포인트 적립·사용(수동)은 매장 관리모드에서만 처리한다.
 export async function requireOwnStore(): Promise<SessionPayload & { storeManagerOf: string }> {
   const session = await requireSession();
-  if (session.role === "owner") {
+  if (session.role === "owner" || session.role === "admin") {
     const storeId = await resolveStoreId(session);
     if (!storeId) throw new ApiError(403, "NO_STORE_CONTEXT");
     return { ...session, storeManagerOf: storeId };

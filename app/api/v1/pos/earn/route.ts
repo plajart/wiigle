@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     const customer = await lookupCustomerByPhone(customerPhone);
     if (!customer) return NextResponse.json({ error: "CUSTOMER_NOT_FOUND" }, { status: 404 });
 
-    const result = await posEarn(session.storeManagerOf, String(customer._id), Number(earnAmount), session.sub, clientTxnId);
+    const result = await posEarn(session.storeManagerOf, String(customer._id), Number(earnAmount), session.sub, clientTxnId, session.role);
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     return handleApiError(e);

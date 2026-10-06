@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireOwnStore } from "@/lib/rbac";
-import { posCheckout, lookupCustomerByPhone } from "@/lib/points";
+import { posCheckout, lookupCustomerByPhone, RedeemBusyError } from "@/lib/points";
 import { handleApiError } from "@/lib/api-utils";
 
 export async function POST(req: Request) {
@@ -14,9 +14,10 @@ export async function POST(req: Request) {
     const customer = await lookupCustomerByPhone(customerPhone);
     if (!customer) return NextResponse.json({ error: "CUSTOMER_NOT_FOUND" }, { status: 404 });
 
-    const result = await posCheckout(session.storeManagerOf, String(customer._id), Number(amount), session.sub, clientTxnId);
+    const result = await posCheckout(session.storeManagerOf, String(customer._id), Number(amount), session.sub, clientTxnId, session.role);
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
+    if (e instanceof RedeemBusyError) return NextResponse.json({ error: "REDEEM_IN_PROGRESS_ELSEWHERE", holder: e.holder }, { status: 409 });
     return handleApiError(e);
   }
 }
