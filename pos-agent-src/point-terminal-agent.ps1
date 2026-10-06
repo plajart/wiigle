@@ -767,8 +767,15 @@ function Show-ResultToast([string]$text) {
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = $text; $lbl.Dock = "Fill"; $lbl.TextAlign = "MiddleCenter"; $lbl.Font = New-Object System.Drawing.Font("맑은 고딕", 12)
     $form.Controls.Add($lbl)
+    # 함수가 끝난 뒤에 실행되는 타이머 처리기는 이 함수의 지역 변수($form, $timer)를 볼 수 없다 — 변수 대신 보낸 타이머($s)와 Tag 로 창을 닫는다.
     $timer = New-Object System.Windows.Forms.Timer; $timer.Interval = 4000
-    $timer.Add_Tick({ $form.Close(); $timer.Stop() })
+    $timer.Tag = $form
+    $timer.Add_Tick({
+        param($s, $e)
+        $s.Stop()
+        try { $s.Tag.Close(); $s.Tag.Dispose() } catch { }
+        try { $s.Dispose() } catch { }
+    })
     $timer.Start()
     $form.Show()
     [System.Windows.Forms.Application]::DoEvents()
