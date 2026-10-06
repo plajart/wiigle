@@ -1025,6 +1025,7 @@ $Script:WatchBusy = $false
 
 # 서버 통합 가용 잔액을 이 번호의 챔프 회원 행(MEM_USABLE_PNT)에 주입한다 — '포인트 사용...' 팝업과 같은 처리(조회 잠금 포함)를 조용히 수행.
 function Inject-ServerBalance([string]$phone) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $tail = if ($phone.Length -ge 4) { $phone.Substring($phone.Length - 4) } else { $phone }
     $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
     if ($members.Count -eq 0) { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 챔프에 이 번호의 회원이 없어 건너뜀(****$tail)"; return }   # 입력 중이거나 비회원
@@ -1071,7 +1072,7 @@ function Inject-ServerBalance([string]$phone) {
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone }
     Send-TransferLog "LOOKUP_TO_POS" $phone $avail $localBefore $newLocal "고객 조회 자동 반영: 서버 포인트를 포스 화면에 더함" ""
-    Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 더함(MEM_NO=$memNo)"
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 더함(MEM_NO=$memNo) — 번호 감지부터 반영 완료까지 $($sw.ElapsedMilliseconds)ms"
     Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
 }
 
