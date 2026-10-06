@@ -4,6 +4,9 @@ import { getFreshSession } from "@/lib/session";
 import { resolveStoreId } from "@/lib/store-context";
 import PosClient from "./PosClient";
 
+// 임의 포인트 변경 스위치(DB 값)에 따라 달라지므로 빌드 때 미리 만들지 않는다.
+export const dynamic = "force-dynamic";
+
 export default async function PosPage() {
   if (!(await isManualPointChangesEnabled())) redirect("/store"); // 웹 수동 적립·사용은 막혀 있다(포인트는 챔프 결제로만 바뀐다)
   const session = await getFreshSession();
