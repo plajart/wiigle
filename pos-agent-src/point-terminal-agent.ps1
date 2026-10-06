@@ -680,6 +680,15 @@ function Send-TransferLog([string]$kind, [string]$phone, $amount, $localBefore, 
     } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 이동 기록 전송 실패(무시): $_" }
 }
 
+# 챔프 화면의 가용·잔여 포인트는 MEM_ACC_PNT(누적 적립) - MEM_USED_PNT(누적 사용) + MEM_USABLE_PNT 로 계산된다(실기기 값으로 확인).
+# 서버가 이미 가진 이 포스의 이력(누적-사용)이 화면에 또 얹히지 않도록, 주입할 때 이 값을 빼서 화면 가용이 서버 가용과 같아지게 한다.
+function Get-DisplayBase($m) {
+    $a = 0.0; $u = 0.0
+    try { if ($null -ne $m.MEM_ACC_PNT -and "$($m.MEM_ACC_PNT)" -ne "") { $a = [double]$m.MEM_ACC_PNT } } catch { }
+    try { if ($null -ne $m.MEM_USED_PNT -and "$($m.MEM_USED_PNT)" -ne "") { $u = [double]$m.MEM_USED_PNT } } catch { }
+    return ($a - $u)
+}
+
 function Show-RedeemPopup {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "포인트 사용 — $($cfg.name)"; $form.Width = 380; $form.Height = 260; $form.StartPosition = "CenterScreen"
@@ -723,7 +732,7 @@ function Show-RedeemPopup {
             return
         }
         try {
-        $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
+        $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT, MEM_ACC_PNT, MEM_USED_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
         if ($members.Count -eq 0) {
             $lblResult.Text = "가용 포인트: $($res.availableBalance)원`n(주의: 이 손님은 챔프에 회원으로 등록돼 있지 않아 챔프 화면에서 포인트결제를 쓸 수 없습니다. 먼저 챔프에서 신규회원등록을 해주세요.)"
             return
@@ -734,19 +743,20 @@ function Show-RedeemPopup {
             try {
                 Move-LeftoverToServer $memNo $phone $null
                 $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
-                $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
+                $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT, MEM_ACC_PNT, MEM_USED_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
             } catch { Write-Host "남은 포인트를 서버로 옮기지 못했습니다(그대로 두고 진행): $_" }
         }
         # 덮어쓰기가 아니라 더하기: 이 조회 시점에 로컬 값이 이미 0이 아닐 수 있다(직전에
         # 발생한 적립이 아직 큐 처리를 못 받아 로컬에 남아있는 경우 등) — 덮어쓰면 그 값을
         # 그냥 날려버리게 되므로, 로컬 기존값 + 서버 가용잔액을 합쳐서 반영한다(2026-09-28).
         $localBefore = [double]$members[0].MEM_USABLE_PNT
-        $newLocal = $localBefore + [double]$res.availableBalance
+        $adj = Get-DisplayBase $members[0]
+        $newLocal = $localBefore + [double]$res.availableBalance - $adj
         Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
         $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = [double]$res.availableBalance; at = Get-Date; phone = $phone }
         Send-TransferLog "LOOKUP_TO_POS" $phone ([double]$res.availableBalance) $localBefore $newLocal "사용 조회: 서버 포인트를 포스 화면에 더함" ""
 
-        $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 더했습니다(화면 표시 $([int]$newLocal)원).`n챔프 고객 관리 창이 이미 열려 있다면 [조회]를 다시 눌러 잔여 포인트가 바뀐 것을 확인한 뒤 포인트결제를 진행하세요."
+        $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 반영했습니다(화면 표시 $([int]($newLocal + $adj))원).`n챔프 고객 관리 창이 이미 열려 있다면 [조회]를 다시 눌러 잔여 포인트가 바뀐 것을 확인한 뒤 포인트결제를 진행하세요."
         } catch {
             # 챔프(포스DB) 조회·수정이 실패한 경우 — 화면이 멈추거나 오류창이 뜨지 않고 안내만 보여준다.
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 포스DB 처리 실패(사용 조회): $_" -ForegroundColor Red
@@ -1027,7 +1037,7 @@ $Script:WatchBusy = $false
 function Inject-ServerBalance([string]$phone) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $tail = if ($phone.Length -ge 4) { $phone.Substring($phone.Length - 4) } else { $phone }
-    $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
+    $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT, MEM_ACC_PNT, MEM_USED_PNT FROM MEMBER WHERE MEM_TEL_1=$(Sql-Str $phone) OR MEM_REP_TEL=$(Sql-Str $phone)"
     if ($members.Count -eq 0) { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 챔프에 이 번호의 회원이 없어 건너뜀(****$tail)"; return }   # 입력 중이거나 비회원
     $memNo = $members[0].MEM_NO
     if ($Script:SwapPending.ContainsKey($memNo)) {
@@ -1069,16 +1079,17 @@ function Inject-ServerBalance([string]$phone) {
             Move-LeftoverToServer $memNo $phone $null
             $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -TimeoutSec 6 -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
             $avail = [double]$res.availableBalance
-            $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
+            $members = Champ-Query "SELECT MEM_NO, MEM_USABLE_PNT, MEM_ACC_PNT, MEM_USED_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
         } catch { Write-Host "자동 반영: 남은 포인트를 서버로 옮기지 못했습니다(그대로 진행): $_" }
     }
     if ($avail -le 0) { return }
     $localBefore = [double]$members[0].MEM_USABLE_PNT
-    $newLocal = $localBefore + $avail
+    $adj = Get-DisplayBase $members[0]
+    $newLocal = $localBefore + $avail - $adj
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone }
     Send-TransferLog "LOOKUP_TO_POS" $phone $avail $localBefore $newLocal "고객 조회 자동 반영: 서버 포인트를 포스 화면에 더함" ""
-    Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 더함(MEM_NO=$memNo) — 번호 감지부터 반영 완료까지 $($sw.ElapsedMilliseconds)ms"
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 반영(MEM_NO=$memNo, 포스 이력 누적-사용=$([int]$adj)로 보정, MEM_USABLE_PNT=$([int]$newLocal)) — 번호 감지부터 반영 완료까지 $($sw.ElapsedMilliseconds)ms"
     Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
 }
 
@@ -1097,7 +1108,7 @@ function Watch-ChampPhone {
             try { Inject-ServerBalance $f[2] } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 오류: $_" -ForegroundColor Red }
         }
         # 화면에서 사라진 번호는 기록에서 지운다(같은 번호를 다시 입력하면 다시 반영).
-        foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k) } }
+        foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k); Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 입력칸에서 번호가 사라져 감시 기록을 지움($($k.Split('|')[0]))" } }
     } finally { $Script:WatchBusy = $false }
 }
 
