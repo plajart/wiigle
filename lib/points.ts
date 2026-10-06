@@ -906,7 +906,23 @@ export type BulkImportResult = {
   alreadyLinked: number; // 이 매장에 이미 계좌가 있어 건너뛴 손님 수(중복 실행 방지)
   skippedInvalidPhone: number;
   totalAmount: number;
+  // 이 포스기에서 이 고객의 포인트를 이미 이전한 기록이 있어 이번에는 반영하지 않은 항목(포스 잔액이 영점화되지 않은 것으로 보임).
+  // alreadyApplied: 포스 잔액이 이전 기록 이하 — 이미 서버에 있는 포인트라 포스 쪽을 0으로 정리하면 된다.
+  // held: 포스 잔액이 이전 기록보다 많음 — 어디서 늘었는지 알 수 없어 자동 처리하지 않고 사람이 확인해야 한다(포스 잔액은 그대로 둔다).
+  alreadyApplied?: { phone: string; balance: number }[];
+  held?: { phone: string; balance: number; previous: number }[];
 };
+
+/** 이 포스기에서 이 고객에 대해 이미 서버로 이전한 포인트 합계(이전 내역과 옛 이전 기록 중 큰 값). */
+async function previousImportedFromTerminal(terminalId: string, userId: string): Promise<number> {
+  const [events, records] = await Promise.all([
+    PointEvent.find({ terminalId, userId, type: "VENDOR_IMPORT" }).select("amount").lean(),
+    VendorImportRecord.find({ terminalId, userId }).select("amount").lean(),
+  ]);
+  const fromEvents = events.reduce((s, e) => s + (e.amount || 0), 0);
+  const fromRecords = records.reduce((s, r) => s + (r.amount || 0), 0);
+  return Math.max(fromEvents, fromRecords);
+}
 
 export async function bulkImportLegacyBalances(
   storeId: string,
@@ -935,10 +951,33 @@ export async function bulkImportLegacyBalances(
   let imported = 0;
   let alreadyLinked = 0;
   let totalAmount = 0;
+  const alreadyApplied: { phone: string; balance: number }[] = [];
+  const held: { phone: string; balance: number; previous: number }[] = [];
 
   for (const [phone, { balance, cardNo }] of byPhone) {
     const user = await getOrCreateUserByPhone(phone);
     const customerId = String(user._id);
+    // 같은 포스기에서 이 고객의 포인트를 이미 이전했다면(영점화가 안 된 채 남은 포스 잔액을 다시 보내는 경우 — 프로그램 업데이트 중 이전만 되고
+    // 영점화가 안 된 경우 등) 이중 반영하지 않는다. 이후 정상 흐름에서 포스 잔액은 이전할 때마다 0이 되므로, 이전 기록이 있는 고객의
+    // 포스 잔액이 다시 남아 있다면 이미 서버에 반영된 포인트로 본다. 이전 기록보다 잔액이 많으면 자동 처리하지 않고 사람이 확인하게 한다.
+    // (같은 묶음의 재시도는 아래 importTxnId 검사가 따로 처리한다.)
+    const prevImported = await previousImportedFromTerminal(terminalId, customerId);
+    if (prevImported > 0) {
+      const sameBatch = batchId ? await PointEvent.exists({ storeId, vendorTxnId: `IMPORT-${terminalId}-${batchId}-${phone}-${balance}` }) : null;
+      if (!sameBatch) {
+        if (balance <= prevImported + 0.5) alreadyApplied.push({ phone, balance });
+        else held.push({ phone, balance, previous: prevImported });
+        alreadyLinked++;
+        await AuditLog.create({
+          storeId,
+          actorType: "AGENT",
+          actorId: terminalId,
+          action: balance <= prevImported + 0.5 ? "IMPORT_SKIPPED_ALREADY_IMPORTED" : "IMPORT_HELD_REVIEW",
+          meta: { customerId, phone, balance, previousImported: prevImported, batchId },
+        });
+        continue;
+      }
+    }
     // 이 포스기에서 이 고객 몫을 이미 가져왔으면 스킵(포스기 단위 — 같은 매장의 다른
     // 포스기에서 이미 실적립·다른 초기화가 있었어도 이 포스기 몫은 별도로 더해야 함).
     // batchId가 있으면(새 프로그램) 몇 번을 다시 실행해도 안전한 방식: (포스기, 이전 묶음, 전화번호, 금액)이 같은 요청은 한 번만 반영된다 —
@@ -991,7 +1030,7 @@ export async function bulkImportLegacyBalances(
     totalAmount += balance;
   }
 
-  return { imported, alreadyLinked, skippedInvalidPhone, totalAmount };
+  return { imported, alreadyLinked, skippedInvalidPhone, totalAmount, alreadyApplied, held };
 }
 
 /**

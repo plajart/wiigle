@@ -496,6 +496,7 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     }
 
     $imported = 0; $already = 0; $skipped = 0; $totalAmount = 0; $failed = 0
+    $heldAll = @(); $zeroedAlready = @()
     $batchSize = 200
     for ($i = 0; $i -lt $withPhone.Count; $i += $batchSize) {
         $batch = @($withPhone[$i..([Math]::Min($i + $batchSize - 1, $withPhone.Count - 1))])
@@ -505,8 +506,14 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
             $json = '{"batchId":"' + $batchId + '","entries":[' + ($items -join ',') + ']}'
             $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
             $imported += $res.imported; $already += $res.alreadyLinked; $skipped += $res.skippedInvalidPhone; $totalAmount += $res.totalAmount
+            # 서버가 "이미 이전한 기록이 있어 반영하지 않음"으로 돌려준 항목: 이전 기록 이하(alreadyApplied)면 이미 서버에 있는 포인트가 포스에 영점화되지 않고 남은 것이므로
+            # 포스 쪽만 0으로 정리하고, 이전 기록보다 많은 경우(held)는 자동 처리하지 않고 포스 잔액을 그대로 둔 채 경고한다.
+            $heldPhones = @()
+            foreach ($h in @($res.held)) { if ($h) { $heldPhones += [string]$h.phone; $heldAll += $h } }
+            foreach ($a in @($res.alreadyApplied)) { if ($a) { $zeroedAlready += $a } }
             # 서버 반영이 확인된 회원만, 옮긴 금액만큼만 포스 잔액에서 뺀다(그 사이 새로 쌓인 잔액은 건드리지 않는다).
             foreach ($e in $batch) {
+                if ($heldPhones -contains [string]$e.phone) { continue }
                 $amt = [double]$e.balance
                 Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $amt < 0 THEN 0 ELSE MEM_USABLE_PNT - $amt END WHERE MEM_NO=$(Sql-Str $e.memNo)"
             }
@@ -527,7 +534,14 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     }
     $summary = @{ ranAt = (Get-Date).ToString("o"); memberCount = $members.Count; withPhone = $withPhone.Count; noPhone = $noPhoneMembers.Count; imported = $imported; alreadyApplied = $already; skippedInvalidPhone = $skipped; totalAmount = $totalAmount; failedBatches = $failed }
     $summary | ConvertTo-Json | Out-File -Encoding UTF8 "$PSScriptRoot\transfer-last.json"
+    if ($zeroedAlready.Count -gt 0) { Write-Host "이미 서버로 이전된 포인트가 포스에 영점화되지 않고 남아 있던 회원 $($zeroedAlready.Count)명 — 포스 잔액만 0으로 정리했습니다(서버에 중복 반영 안 함)." -ForegroundColor Yellow }
     $resultText = "포인트 서버 이전 결과`n새로 이전 $imported 명 / 이미 반영됨 $already 명 / 합계 $totalAmount 포인트`n전화번호가 없는 회원 $($noPhoneMembers.Count)명의 포인트는 포스에 그대로 남겨 두었습니다(번호가 등록되면 다음 이전 때 또는 그 회원이 결제할 때 서버로 옮겨집니다). (실패 묶음 $failed)"
+    if ($zeroedAlready.Count -gt 0) { $resultText += "`n`n[알림] 이미 서버로 이전된 포인트가 포스에 남아 있던 회원 $($zeroedAlready.Count)명은 서버에 다시 더하지 않고 포스 잔액만 0으로 정리했습니다." }
+    if ($heldAll.Count -gt 0) {
+        $heldText = ($heldAll | Select-Object -First 5 | ForEach-Object { "$($_.phone): 포스 $($_.balance) / 서버에 이전한 기록 $($_.previous)" }) -join "`n"
+        $resultText += "`n`n[경고] 이 회원 $($heldAll.Count)명은 포스 잔액이 이미 서버로 이전한 금액보다 많아 자동으로 처리하지 않았습니다(포스 잔액 그대로).`n$heldText`n매장 관리자·본사에 확인을 요청하세요."
+        Send-TransferLog "REJECTED" "" 0 $null $null "이전 보류(이전 기록보다 포스 잔액이 많음) $($heldAll.Count)명" ""
+    }
     if ($failed -gt 0) { $resultText += "`n`n일부 묶음이 실패했습니다. 인터넷 연결을 확인하고 다시 실행하면 이어서 처리됩니다." }
     Write-Host $resultText -ForegroundColor Green
     & $say $resultText $(if ($failed -gt 0) { $warn } else { $info })
@@ -545,6 +559,7 @@ $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
 $Script:RetryError = $null
 $Script:ServerAgentVersion = $null
+$Script:HeldWarned = @{}   # 이전 보류 경고를 회원별로 한 번만 띄우기 위한 목록
 $Script:StoreUrl = $null
 $Script:UpdateReport = $null      # 서버가 지시한 업데이트의 결과(BUSY/FAILED)를 다음 하트비트로 알린다
 $Script:UpdateInProgress = $false
@@ -754,6 +769,21 @@ function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
     $item = @{ phone = $phone; cardNo = $cardNo; balance = $bal } | ConvertTo-Json -Compress
     $json = '{"batchId":"' + $batchId + '","entries":[' + $item + ']}'
     $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/bulk-import" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -TimeoutSec 15 -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
+    $heldNow = @($res.held | Where-Object { $_ })
+    if ($heldNow.Count -gt 0) {
+        # 이미 서버로 이전한 기록보다 포스 잔액이 많다 — 자동으로 더하거나 지우지 않고 한 번만 경고한다.
+        if (-not $Script:HeldWarned.ContainsKey("$memNo")) {
+            $Script:HeldWarned["$memNo"] = $true
+            Send-TransferLog "REJECTED" $phone $bal $null $null "이전 보류: 포스 잔액 $bal 이 서버 이전 기록 $($heldNow[0].previous) 보다 많음" ""
+            [System.Windows.Forms.MessageBox]::Show("이 손님($phone)의 포스 포인트 $bal 이(가) 이미 서버로 이전한 금액($($heldNow[0].previous))보다 많아 자동으로 처리하지 않았습니다.`n`n서버 포인트가 중복되거나 틀어질 수 있으니 매장 관리자·본사에 확인을 요청해주세요.", "포인트 관리 프로그램 - 확인 필요", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+        return
+    }
+    $applied = @($res.alreadyApplied | Where-Object { $_ })
+    if ($applied.Count -gt 0) {
+        # 이미 서버로 이전된 포인트가 포스에 영점화되지 않고 남아 있던 경우 — 서버에 다시 더하지 않고 포스 잔액만 0으로 정리하고 알린다.
+        Show-ResultToast "이미 서버로 이전된 포인트가`n포스에 남아 있어 0으로 정리했습니다`n($phone, $bal)"
+    }
     if ($res.imported -gt 0 -or $res.alreadyLinked -gt 0) {
         Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $bal < 0 THEN 0 ELSE MEM_USABLE_PNT - $bal END WHERE MEM_NO=$(Sql-Str $memNo)"
         Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 포스에 남아 있던 포인트 $bal 을(를) 서버로 옮겼습니다."
