@@ -1,3 +1,4 @@
+import { assertManualPointChangesAllowed } from "@/lib/manual-points";
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireCompanyAdmin, ApiError } from "@/lib/rbac";
@@ -7,6 +8,7 @@ import { handleApiError } from "@/lib/api-utils";
 
 export async function POST(req: Request) {
   try {
+    assertManualPointChangesAllowed(); // 챔프 외 임의 포인트 변경은 기본으로 막는다
     await dbConnect();
     const session = await requireCompanyAdmin();
     // 통합포인트는 고객사 단위 — 지급·조정은 현재(들어가 있는) 고객사의 통합포인트에만 반영된다.

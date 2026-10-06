@@ -1,3 +1,4 @@
+import { assertManualPointChangesAllowed } from "@/lib/manual-points";
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { requireOwnStore } from "@/lib/rbac";
@@ -6,6 +7,7 @@ import { handleApiError } from "@/lib/api-utils";
 
 export async function POST(req: Request) {
   try {
+    assertManualPointChangesAllowed(); // 챔프 외 임의 포인트 변경은 기본으로 막는다
     await dbConnect();
     const session = await requireOwnStore();
     const { customerPhone, amount, clientTxnId } = await req.json();

@@ -461,6 +461,9 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     # 포스 잔액이 마이너스인 회원(이미 서버에서 차감된 사용분)은 0으로 정리한다 — 서버 이전 대상이 아니다.
     try { Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_USABLE_PNT < 0" } catch { Write-Host "마이너스 잔액 정리 실패(무시): $_" }
 
+    # 이전하는 짧은 동안(서버 반영 → 포스 잔액 차감 사이) 같은 포스 프로그램 안에서 포인트가 바뀌지 않게 막는다 — 결제 큐 처리, 남은 포인트 이전, 사용 조회, 업데이트를 잠시 멈춘다.
+    $Script:TransferBusy = $true
+    try {
     Write-Host "=== 포인트 서버 이전을 시작합니다 ===" -ForegroundColor Cyan
     $members = Champ-Query "SELECT MEM_NO, MEM_NM, MEM_TEL_1, MEM_REP_TEL, MEM_CARD_NO, MEM_USABLE_PNT FROM MEMBER WHERE MEM_USABLE_PNT > 0"
     if ($members.Count -eq 0) {
@@ -545,6 +548,9 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     if ($failed -gt 0) { $resultText += "`n`n일부 묶음이 실패했습니다. 인터넷 연결을 확인하고 다시 실행하면 이어서 처리됩니다." }
     Write-Host $resultText -ForegroundColor Green
     & $say $resultText $(if ($failed -gt 0) { $warn } else { $info })
+    } finally {
+        $Script:TransferBusy = $false
+    }
 }
 
 # ─── 대표 포스기 바탕화면 바로가기 ────────────────────────────────────────────
@@ -559,6 +565,7 @@ $Script:LastErrorAt = $null
 $Script:SkippedNoPhone = 0
 $Script:RetryError = $null
 $Script:ServerAgentVersion = $null
+$Script:TransferBusy = $false   # 포인트 서버 이전이 진행 중인 동안 true — 다른 포인트 처리를 잠시 막는다
 $Script:HeldWarned = @{}   # 이전 보류 경고를 회원별로 한 번만 띄우기 위한 목록
 $Script:StoreUrl = $null
 $Script:UpdateReport = $null      # 서버가 지시한 업데이트의 결과(BUSY/FAILED)를 다음 하트비트로 알린다
@@ -641,6 +648,7 @@ function Show-RedeemPopup {
     $btnLookup.Add_Click({
         $phone = $txtPhone.Text -replace '[^0-9]', ''
         if ($phone.Length -lt 9) { $lblResult.Text = "전화번호를 확인해주세요."; return }
+        if ($Script:TransferBusy) { $lblResult.Text = "포인트 서버 이전 중입니다. 잠시 후 다시 조회해주세요."; return }
         try {
             $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" `
                 -Body (@{ action = "lookup"; phone = $phone } | ConvertTo-Json)
@@ -757,6 +765,7 @@ function Reset-NegativeLocal($memNo) {
 }
 
 function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
+    if ($Script:TransferBusy) { return }
     $other = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
     if ($other -gt 0) { return }
     $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
@@ -791,6 +800,7 @@ function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
 }
 
 function Process-Queue {
+    if ($Script:TransferBusy) { return }  # 포인트 서버 이전 중에는 결제 큐 처리를 잠시 멈춘다(이전이 끝나면 이어서 처리)
     $rows = Champ-Query "SELECT CRAB_SEQ, MEM_NO, MEMP_AMT, MEMP_ADD_AMT, MEMP_USED_AMT, MEMP_CARD_NO, SRC_SELLS_DT, SRC_CHN_NO, CREATED_AT FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' ORDER BY CRAB_SEQ"
     $passFailed = $false
     foreach ($r in $rows) {
@@ -912,6 +922,7 @@ function Invoke-AgentUpdate([switch]$Auto) {
     $warn = [System.Windows.Forms.MessageBoxIcon]::Warning
     # 자동(본사가 시작한 순차 업데이트)에는 확인창을 띄우지 않는다. 결제·사용 조회 중이거나 서버에 못 보낸 결제가 있으면 미루고(BUSY) 나중에 다시 순서가 온다.
     if ($Auto) {
+        if ($Script:TransferBusy) { $Script:UpdateReport = @{ status = "BUSY"; error = $null }; return }
         $pendingQ = 0
         try { $pendingQ = [int]$Champ.Execute("SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N'").Fields.Item("C").Value } catch { }
         if ($Script:SwapPending.Count -gt 0 -or $pendingQ -gt 0) { $Script:UpdateReport = @{ status = "BUSY"; error = $null }; return }

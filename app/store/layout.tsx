@@ -1,3 +1,4 @@
+import { MANUAL_POINT_CHANGES_ENABLED } from "@/lib/manual-points";
 import { redirect } from "next/navigation";
 import { getFreshSession } from "@/lib/session";
 import { dbConnect } from "@/lib/mongodb";
@@ -26,7 +27,7 @@ export default async function StoreLayout({ children }: { children: React.ReactN
   // 업무 흐름 순서: 일상 운영(대시보드, 결제, 정산) → 고객 가입 안내 → 연동 설정(동의 → 포스기 설치) → 활동 로그
   const ITEMS: SidebarItem[] = [{ href: "/store", label: "대시보드", icon: "▤" }];
   // 결제 터미널(수동 적립·사용): 매장 관리자, 그리고 매장 관리모드로 들어온 본사·고객사 운영자.
-  if (session.role === "manager" || session.role === "owner" || session.role === "admin") ITEMS.push({ href: "/pos", label: "POS 결제 터미널", icon: "◎" });
+  if (MANUAL_POINT_CHANGES_ENABLED && (session.role === "manager" || session.role === "owner" || session.role === "admin")) ITEMS.push({ href: "/pos", label: "POS 결제 터미널", icon: "◎" });
   ITEMS.push(
     { href: "/store/settlement", label: "일일 정산", icon: "▧" },
     { href: "/store/qr", label: "가입 안내 QR", icon: "▦" },
