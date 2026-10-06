@@ -22,6 +22,7 @@ Write-Host "자동시작을 제거했습니다."
 # 3) 바탕화면 바로가기 제거
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) "포인트 관리모드.lnk") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) "포인트 관리 프로그램.url") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) "포인트 관리 프로그램.lnk") -Force -ErrorAction SilentlyContinue
 Write-Host "바탕화면 바로가기를 제거했습니다."
 
 # 4) 포스DB 연동 장치(결제 감지 트리거 + 대기열 테이블) 제거 — 실패해도 프로그램은 이미 제거된 상태이고 남은 장치는 무해하다.

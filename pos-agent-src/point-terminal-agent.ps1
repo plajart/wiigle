@@ -225,21 +225,63 @@ function Ensure-AutoStart {
     }
 }
 
+# 크롬 실행파일 경로 — 설치 위치(Program Files / Program Files (x86) / 사용자별)와 레지스트리 App Paths 를 차례로 찾는다. 없으면 $null.
+function Get-ChromePath {
+    $cands = @()
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if ($base) { $cands += (Join-Path $base "Google\Chrome\Application\chrome.exe") }
+    }
+    foreach ($hive in @("HKLM", "HKCU")) {
+        try {
+            $v = (Get-ItemProperty -Path "${hive}:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe" -ErrorAction Stop)."(default)"
+            if ($v) { $cands += $v }
+        } catch { }
+    }
+    foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+    return $null
+}
+
+# 관리프로그램(웹 매장 관리모드)을 크롬으로 연다 — 크롬이 없으면 기본 브라우저.
+function Open-ManagePage([string]$url) {
+    $chrome = Get-ChromePath
+    if ($chrome) { Start-Process -FilePath $chrome -ArgumentList $url } else { Start-Process $url }
+}
+
 function Set-ManageShortcut([bool]$isPrimary, [string]$storeUrl) {
-    # 바탕화면 "포인트 관리 프로그램" 바로가기 — 모든 포스기에 만든다(설치 때 한 번, 이후 하트비트가 없어졌거나 주소가 바뀌었으면 다시 만든다).
-    # 클릭하면 기본 브라우저로 매장 관리모드(웹과 동일 화면)가 열린다. 인터넷 바로가기(.url)라 브라우저 경로에 상관없이 동작한다.
+    # 바탕화면 "포인트 관리 프로그램" 바로가기 — 모든 포스기에 만든다(설치 때 한 번, 이후 하트비트가 없어졌거나 바뀌었으면 다시 만든다).
+    # 크롬이 있으면 크롬으로 매장 관리모드(웹과 동일 화면)를 여는 바로가기(.lnk), 크롬이 없으면 기본 브라우저로 여는 인터넷 바로가기(.url).
     try {
         $desktop = [Environment]::GetFolderPath('Desktop')
         $oldLnk = "$desktop\포인트 관리모드.lnk"   # 예전 버전(대표 포스기 전용)이 만든 바로가기는 새 것으로 교체한다
         if (Test-Path $oldLnk) { Remove-Item $oldLnk -Force -ErrorAction SilentlyContinue }
         if (-not $storeUrl) { return }
-        $path = "$desktop\포인트 관리 프로그램.url"
-        $lines = @("[InternetShortcut]", "URL=$storeUrl")
-        if (Test-Path "$PSScriptRoot\pointmanager.ico") { $lines += "IconFile=$PSScriptRoot\pointmanager.ico"; $lines += "IconIndex=0" }
-        $content = ($lines -join "`r`n") + "`r`n"
-        $current = $null
-        if (Test-Path $path) { try { $current = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Default) } catch { } }
-        if ($current -ne $content) { [System.IO.File]::WriteAllText($path, $content, [System.Text.Encoding]::Default) }
+        $icon = "$PSScriptRoot\pointmanager.ico"
+        $chrome = Get-ChromePath
+        $lnkPath = "$desktop\포인트 관리 프로그램.lnk"
+        $urlPath = "$desktop\포인트 관리 프로그램.url"
+        if ($chrome) {
+            if (Test-Path $urlPath) { Remove-Item $urlPath -Force -ErrorAction SilentlyContinue }   # 크롬으로 바뀌면 예전 .url 은 지운다
+            $ws = New-Object -ComObject WScript.Shell
+            $needs = $true
+            if (Test-Path $lnkPath) {
+                try { $cur = $ws.CreateShortcut($lnkPath); if ($cur.TargetPath -eq $chrome -and $cur.Arguments -eq $storeUrl) { $needs = $false } } catch { }
+            }
+            if ($needs) {
+                $lnk = $ws.CreateShortcut($lnkPath)
+                $lnk.TargetPath = $chrome
+                $lnk.Arguments = $storeUrl
+                if (Test-Path $icon) { $lnk.IconLocation = $icon }
+                $lnk.Description = "포인트 관리 프로그램 — 매장 관리모드(웹과 동일 화면)"
+                $lnk.Save()
+            }
+        } else {
+            $lines = @("[InternetShortcut]", "URL=$storeUrl")
+            if (Test-Path $icon) { $lines += "IconFile=$icon"; $lines += "IconIndex=0" }
+            $content = ($lines -join "`r`n") + "`r`n"
+            $current = $null
+            if (Test-Path $urlPath) { try { $current = [System.IO.File]::ReadAllText($urlPath, [System.Text.Encoding]::Default) } catch { } }
+            if ($current -ne $content) { [System.IO.File]::WriteAllText($urlPath, $content, [System.Text.Encoding]::Default) }
+        }
     } catch { Write-Host "바탕화면 바로가기 생성 실패(무시): $_" -ForegroundColor Yellow }
 }
 
@@ -850,7 +892,7 @@ $itemIdentity.Enabled = $false
 $menu.Items.Add("-") | Out-Null
 $itemManage = $menu.Items.Add("관리프로그램 실행하기")
 $itemManage.Add_Click({
-    try { Start-Process ($(if ($Script:StoreUrl) { $Script:StoreUrl } else { "$($cfg.baseUrl)/store" })) }
+    try { Open-ManagePage $(if ($Script:StoreUrl) { $Script:StoreUrl } else { "$($cfg.baseUrl)/store" }) }
     catch { [System.Windows.Forms.MessageBox]::Show("관리프로그램(웹)을 열지 못했습니다.`n브라우저에서 $($cfg.baseUrl)/store 로 접속해주세요.", "포인트 관리 프로그램", "OK", "Warning") | Out-Null }
 })
 $itemRedeem = $menu.Items.Add("포인트 사용...")
