@@ -49,12 +49,19 @@ public class ProbeWin {
         return sb.ToString();
     }
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+    public static string RootTitle(IntPtr h) {
+        IntPtr root = GetAncestor(h, 2);
+        if (root == IntPtr.Zero) return "";
+        StringBuilder rc = new StringBuilder(128); GetClassName(root, rc, 128);
+        return rc + ":'" + TextOf(root) + "'";
+    }
     public static string Describe(IntPtr h) {
         if (h == IntPtr.Zero) return "(없음)";
         StringBuilder cn = new StringBuilder(128); GetClassName(h, cn, 128);
         IntPtr root = GetAncestor(h, 2);
         StringBuilder rc = new StringBuilder(128); if (root != IntPtr.Zero) GetClassName(root, rc, 128);
-        return "클래스=" + cn + " 글자='" + TextOf(h) + "' / 최상위 클래스=" + rc + " 제목='" + (root != IntPtr.Zero ? TextOf(root) : "") + "'";
+        return "클래스=" + cn + " 컨트롤ID=" + GetDlgCtrlID(h) + " 글자='" + TextOf(h) + "' / 최상위 클래스=" + rc + " 제목='" + (root != IntPtr.Zero ? TextOf(root) : "") + "'";
     }
     // 각 줄: T(최상위)/C(자식)|pid|hwnd|클래스|글자  (보이는 창과 그 자식 컨트롤 중 글자가 있는 것)
     public static List<string> Dump() {
@@ -132,7 +139,7 @@ public class MouseProbe {
             $touch = ((([int64]"0x$($f[4])") -band 0xFFFFFF00) -eq 0xFF515700)
             $desc = [ProbeWin]::Describe([IntPtr][int64]$f[5])
             $digitsNow = @()
-            foreach ($row in [ProbeWin]::Dump()) { $p = $row.Split('|', 5); if ($p[4] -match '^[0-9\- ]{4,15}$') { $digitsNow += "클래스=$($p[3]) 글자='$($p[4])'" } }
+            foreach ($row in [ProbeWin]::Dump()) { $p = $row.Split('|', 5); if ($p[4] -match '^[0-9\- ]{4,15}$') { $digitsNow += "클래스=$($p[3]) 창=$([ProbeWin]::RootTitle([IntPtr][int64]$p[2])) 글자='$($p[4])'" } }
             Note "클릭 ($($f[1]),$($f[2])) 터치유래=$touch extra=0x$($f[4]) 대상: $desc / 이 순간 숫자 입력칸: $(if ($digitsNow.Count) { $digitsNow -join ' ; ' } else { '없음(읽히지 않음)' })"
         }
         Start-Sleep -Milliseconds 50
@@ -246,7 +253,7 @@ elseif ($Mode -eq "Ui") {
             if ($txt -notmatch '^[0-9\- ]{1,15}$') { continue }   # 숫자만 있는 글자(타이핑 중인 전화번호 등)만 기록
             $dk = "$($p[1])|$($p[2])"
             if ($last[$dk] -ne $txt) {
-                Note "숫자 글자 변화: 프로세스=$($procNames[$p[1]]) 클래스=$cls hwnd=$($p[2]) 글자='$txt'"
+                Note "숫자 글자 변화: 프로세스=$($procNames[$p[1]]) 클래스=$cls 창=$([ProbeWin]::RootTitle([IntPtr][int64]$p[2])) hwnd=$($p[2]) 글자='$txt'"
                 $last[$dk] = $txt
             }
         }
