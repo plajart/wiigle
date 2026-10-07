@@ -811,7 +811,16 @@ function Restore-TimedOutSwaps {
     foreach ($memNo in @($Script:SwapPending.Keys)) {
         if (($now - $Script:SwapPending[$memNo].at).TotalSeconds -gt $SwapTimeoutSec) {
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 사용 대기 시간초과 — $memNo 원복"
+            $expPhone = "$($Script:SwapPending[$memNo].phone)"
             Restore-SwappedIfDone $memNo
+            # 고객 검색창 등에 이 손님 번호가 계속 남아 있으면(손님이 아직 계산대에 있음) 감시 기록을 지워 다시 반영되게 한다 — 번호가 계속 보이는 동안 최대 2번까지.
+            if ($expPhone -and $Script:AutoInject) {
+                $n = 0; if ($Script:AutoReinject.ContainsKey($expPhone)) { $n = [int]$Script:AutoReinject[$expPhone] }
+                if ($n -lt 2) {
+                    $Script:AutoReinject[$expPhone] = $n + 1
+                    foreach ($k in @($Script:AutoSeen.Keys)) { if ($k.EndsWith("|$expPhone")) { $Script:AutoSeen.Remove($k) } }
+                }
+            }
         }
     }
 }
@@ -1031,6 +1040,8 @@ try { $Script:AutoInject = [bool]$cfg.autoInject } catch { }
 $Script:ChampProcNames = @("champos")
 try { if ($cfg.champProcess) { $Script:ChampProcNames = @("$($cfg.champProcess)") } } catch { }
 $Script:AutoSeen = @{}
+$Script:LastInjected = $null   # 마지막으로 반영한 번호와 시각 — 곧바로 다른 번호로 고쳐 입력했을 때 잘못 반영한 값을 되돌리는 데 쓴다
+$Script:AutoReinject = @{}   # 번호가 화면에 계속 남은 채 유효시간이 만료돼 다시 반영한 횟수(번호가 사라지면 초기화)
 $Script:WatchBusy = $false
 
 # 서버 통합 가용 잔액을 이 번호의 챔프 회원 행(MEM_USABLE_PNT)에 주입한다 — '포인트 사용...' 팝업과 같은 처리(조회 잠금 포함)를 조용히 수행.
@@ -1042,9 +1053,15 @@ function Inject-ServerBalance([string]$phone) {
     $memNo = $members[0].MEM_NO
     if ($Script:SwapPending.ContainsKey($memNo)) {
         # 이미 반영돼 있는 손님을 다시 조회한 경우 — 값을 다시 더하지 않고 유효시간만 연장하며 알려 준다.
-        $Script:SwapPending[$memNo].at = Get-Date
+        $sw = $Script:SwapPending[$memNo]
+        $sw.at = Get-Date
         Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 이미 반영 중이라 유효시간만 연장(MEM_NO=$memNo)"
-        Show-ResultToast "통합 포인트 $([int]$Script:SwapPending[$memNo].injected)원이 이미 반영돼 있습니다`n(유효시간 연장)"
+        # 같은 손님의 알림이 연달아 뜨지 않게(고객 관리 화면이 열리며 같은 번호가 또 보이는 경우 등) 8초 안에는 다시 띄우지 않는다.
+        $lt = $sw.lastToast
+        if (-not $lt -or ((Get-Date) - $lt).TotalSeconds -ge 8) {
+            $sw.lastToast = Get-Date
+            Show-ResultToast "통합 포인트 $([int]$sw.injected)원이 이미 반영돼 있습니다`n(유효시간 연장)"
+        }
         return
     }
     try {
@@ -1087,10 +1104,22 @@ function Inject-ServerBalance([string]$phone) {
     $adj = Get-DisplayBase $members[0]
     $newLocal = $localBefore + $avail - $adj
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
-    $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone }
+    $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone; lastToast = Get-Date }
     Send-TransferLog "LOOKUP_TO_POS" $phone $avail $localBefore $newLocal "고객 조회 자동 반영: 서버 포인트를 포스 화면에 더함" ""
     Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 반영(MEM_NO=$memNo, 포스 이력 누적-사용=$([int]$adj)로 보정, MEM_USABLE_PNT=$([int]$newLocal)) — 번호 감지부터 반영 완료까지 $($sw.ElapsedMilliseconds)ms"
     Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
+}
+
+# 번호를 잘못 입력해(다른 실제 손님 번호) 반영했다가 20초 안에 다른 번호로 고쳐 입력한 경우 — 잘못 반영한 값을 되돌린다.
+# 그 손님의 결제 처리 대기 건이 있으면(실제로 결제 중) 건드리지 않는다.
+function Undo-WrongInjection([string]$phone) {
+    foreach ($memNo in @($Script:SwapPending.Keys)) {
+        if ("$($Script:SwapPending[$memNo].phone)" -ne $phone) { continue }
+        $pending = [int](Invoke-Champ "SELECT count(*) AS C FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' AND MEM_NO=$(Sql-Str $memNo)").Fields.Item("C").Value
+        if ($pending -gt 0) { return }
+        Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 번호가 곧바로 정정돼 잘못 반영한 값을 되돌림(MEM_NO=$memNo)"
+        Restore-SwappedIfDone $memNo
+    }
 }
 
 function Watch-ChampPhone {
@@ -1105,10 +1134,16 @@ function Watch-ChampPhone {
             if ($Script:AutoSeen.ContainsKey($key)) { continue }   # 같은 칸의 같은 번호는 화면에 남아 있는 동안 한 번만 처리
             $Script:AutoSeen[$key] = $true
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 전화번호 입력 감지(****$($f[2].Substring($f[2].Length - 4)), $($f[1]))"
+            $prevInj = $Script:LastInjected
+            if ($prevInj -and $prevInj.phone -ne $f[2] -and ((Get-Date) - $prevInj.at).TotalSeconds -lt 20) {
+                try { Undo-WrongInjection $prevInj.phone } catch { Write-Host "자동 반영: 정정 되돌리기 오류: $_" -ForegroundColor Red }
+                $Script:LastInjected = $null
+            }
             try { Inject-ServerBalance $f[2] } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 오류: $_" -ForegroundColor Red }
+            foreach ($sw in $Script:SwapPending.Values) { if ("$($sw.phone)" -eq $f[2] -and "$($sw.lastToast)" -ne "") { $Script:LastInjected = @{ phone = $f[2]; at = Get-Date }; break } }
         }
         # 화면에서 사라진 번호는 기록에서 지운다(같은 번호를 다시 입력하면 다시 반영).
-        foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k); Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 입력칸에서 번호가 사라져 감시 기록을 지움($($k.Split('|')[0]))" } }
+        foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k); $Script:AutoReinject.Remove($k.Split('|')[1]); Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 입력칸에서 번호가 사라져 감시 기록을 지움($($k.Split('|')[0]))" } }
     } finally { $Script:WatchBusy = $false }
 }
 
