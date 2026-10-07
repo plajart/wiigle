@@ -671,6 +671,34 @@ function Send-Heartbeat {
 # ─── 사용(REDEEM) 팝업 — 스왑 대기 목록: MEM_NO -> {original=원래 로컬값, at=스왑 시각} ──
 
 $Script:SwapPending = @{}
+$SwapStatePath = "$PSScriptRoot\swap-state.json"
+
+# 반영 중인 손님(사용 조회로 포스 잔여에 서버 포인트를 잠시 넣어 둔 상태)을 파일에 저장한다 — 프로그램이 도중에 꺼져도(업데이트·포스 종료)
+# 다시 시작할 때 이어서 정리(3분 뒤 원복)되게 해서, 주입한 값이 포스 자체 포인트로 오인돼 서버에 이중 적립되는 일을 막는다.
+function Save-SwapState {
+    try {
+        $list = @()
+        foreach ($k in $Script:SwapPending.Keys) {
+            $v = $Script:SwapPending[$k]
+            $list += [pscustomobject]@{ memNo = "$k"; phone = "$($v.phone)"; injected = [double]$v.injected; localBefore = [double]$v.localBefore }
+        }
+        if ($list.Count -eq 0) { if (Test-Path $SwapStatePath) { Remove-Item $SwapStatePath -Force -ErrorAction SilentlyContinue }; return }
+        (ConvertTo-Json -InputObject @($list) -Compress) | Out-File -Encoding UTF8 $SwapStatePath
+    } catch { Write-Host "반영 상태 저장 실패(무시): $_" }
+}
+
+function Load-SwapState {
+    if (-not (Test-Path $SwapStatePath)) { return }
+    try {
+        $items = @(Get-Content $SwapStatePath -Raw -Encoding UTF8 | ConvertFrom-Json)
+        foreach ($it in $items) {
+            if (-not $it.memNo) { continue }
+            # 새 유효시간으로 이어받는다 — 결제 처리나 시간 초과 때 기존 흐름이 포스 잔여를 되돌린다.
+            $Script:SwapPending["$($it.memNo)"] = @{ localBefore = [double]$it.localBefore; injected = [double]$it.injected; at = Get-Date; phone = "$($it.phone)" }
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') 이전 실행에서 반영 중이던 손님(MEM_NO=$($it.memNo))을 이어받음 — 곧 정리됩니다."
+        }
+    } catch { Write-Host "반영 상태 읽기 실패(무시): $_" }
+}
 
 # 포스DB 안에서 일어난 포인트 이동·건너뜀을 서버 장부에 남긴다(문제 발생 시 추적용). 실패해도(인터넷 끊김 등) 본 처리에는 영향 없다.
 function Send-TransferLog([string]$kind, [string]$phone, $amount, $localBefore, $localAfter, [string]$note, [string]$txn) {
@@ -754,6 +782,7 @@ function Show-RedeemPopup {
         $newLocal = $localBefore + [double]$res.availableBalance - $adj
         Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
         $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = [double]$res.availableBalance; at = Get-Date; phone = $phone }
+        Save-SwapState
         Send-TransferLog "LOOKUP_TO_POS" $phone ([double]$res.availableBalance) $localBefore $newLocal "사용 조회: 서버 포인트를 포스 화면에 더함" ""
 
         $lblResult.Text = "가용 포인트 $([int]$res.availableBalance)원을 챔프 화면에 반영했습니다(화면 표시 $([int]($newLocal + $adj))원).`n챔프 고객 관리 창이 이미 열려 있다면 [조회]를 다시 눌러 잔여 포인트가 바뀐 것을 확인한 뒤 포인트결제를 진행하세요."
@@ -769,11 +798,46 @@ function Show-RedeemPopup {
     $form.ShowDialog() | Out-Null
 }
 
+# 알림창은 포커스를 가져가지 않고(키 입력이 챔프로 계속 간다) 터치·클릭이 통과하며(아래 버튼을 가리지 않는다) 화면 오른쪽 아래에 뜬다.
+# 이런 창을 만들 수 없으면(예외) 이전 방식의 일반 창으로 대신한다.
+function New-ToastForm {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'PmToastForm').Type) {
+            Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @"
+using System.Windows.Forms;
+public class PmToastForm : Form {
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+        get {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000;  // WS_EX_NOACTIVATE
+            cp.ExStyle |= 0x00000080;  // WS_EX_TOOLWINDOW
+            cp.ExStyle |= 0x00080000;  // WS_EX_LAYERED
+            cp.ExStyle |= 0x00000020;  // WS_EX_TRANSPARENT (클릭 통과)
+            return cp;
+        }
+    }
+}
+"@
+        }
+        return (New-Object PmToastForm)
+    } catch {
+        Write-Host "알림창(포커스 안 가져가는 방식)을 만들지 못해 일반 창으로 대신합니다: $_"
+        return (New-Object System.Windows.Forms.Form)
+    }
+}
+
 function Show-ResultToast([string]$text) {
     # 적립 결과를 알려주는 알림창(입력 없음, 몇 초 후 자동 닫힘)
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "포인트 관리 프로그램"; $form.Width = 320; $form.Height = 130; $form.StartPosition = "CenterScreen"
-    $form.TopMost = $true; $form.FormBorderStyle = "FixedToolWindow"
+    $form = New-ToastForm
+    $form.Text = "포인트 관리 프로그램"; $form.Width = 320; $form.Height = 130
+    $form.TopMost = $true; $form.FormBorderStyle = "FixedToolWindow"; $form.ShowInTaskbar = $false
+    try { $form.Opacity = 0.95 } catch { }
+    $form.StartPosition = "Manual"
+    try {
+        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $form.Location = New-Object System.Drawing.Point(($wa.Right - $form.Width - 20), ($wa.Bottom - $form.Height - 20))
+    } catch { $form.StartPosition = "CenterScreen" }
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = $text; $lbl.Dock = "Fill"; $lbl.TextAlign = "MiddleCenter"; $lbl.Font = New-Object System.Drawing.Font("맑은 고딕", 12)
     $form.Controls.Add($lbl)
@@ -803,6 +867,7 @@ function Restore-SwappedIfDone($memNo) {
     try { $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"; if ($cur.Count -gt 0) { $curLocal = [double]$cur[0].MEM_USABLE_PNT } } catch { }
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending.Remove($memNo)
+    Save-SwapState
     # 이 손님의 계산이 끝났다(결제 처리·되돌림) — 정정 대상으로 남겨 두지 않는다.
     if ($Script:LastInjected -and "$($Script:LastInjected.phone)" -eq "$($swapInfo.phone)") { $Script:LastInjected = $null }
     Send-TransferLog "RESTORE_POS" "$($swapInfo.phone)" 0 $curLocal 0 "결제 후/대기 종료: 포스 잔액을 0으로 되돌림(서버가 원본)" ""
@@ -1108,6 +1173,7 @@ function Inject-ServerBalance([string]$phone) {
     $newLocal = $localBefore + $avail - $adj
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=$newLocal WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending[$memNo] = @{ localBefore = $localBefore; injected = $avail; at = Get-Date; phone = $phone; lastToast = Get-Date }
+    Save-SwapState
     Send-TransferLog "LOOKUP_TO_POS" $phone $avail $localBefore $newLocal "고객 조회 자동 반영: 서버 포인트를 포스 화면에 더함" ""
     Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영(****$tail): 통합 포인트 $([int]$avail)원을 포스 잔여에 반영(MEM_NO=$memNo, 포스 이력 누적-사용=$([int]$adj)로 보정, MEM_USABLE_PNT=$([int]$newLocal)) — 번호 감지부터 반영 완료까지 $($sw.ElapsedMilliseconds)ms"
     Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
@@ -1270,6 +1336,10 @@ $heartbeatTimer.Add_Tick({ Send-Heartbeat | Out-Null })
 $heartbeatTimer.Start()
 Send-Heartbeat | Out-Null
 
+
+try { Load-SwapState } catch { }
+# 알림창 형식을 미리 준비해 둔다(처음 뜰 때 컴파일로 잠깐 멈추지 않게).
+try { $warm = New-ToastForm; $warm.Dispose() } catch { }
 
 $queueTimer = New-Object System.Windows.Forms.Timer; $queueTimer.Interval = $QueuePollSec * 1000
 $queueTimer.Add_Tick({
