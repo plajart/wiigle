@@ -803,6 +803,8 @@ function Restore-SwappedIfDone($memNo) {
     try { $cur = Champ-Query "SELECT MEM_USABLE_PNT FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"; if ($cur.Count -gt 0) { $curLocal = [double]$cur[0].MEM_USABLE_PNT } } catch { }
     Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT=0 WHERE MEM_NO=$(Sql-Str $memNo)"
     $Script:SwapPending.Remove($memNo)
+    # 이 손님의 계산이 끝났다(결제 처리·되돌림) — 정정 대상으로 남겨 두지 않는다.
+    if ($Script:LastInjected -and "$($Script:LastInjected.phone)" -eq "$($swapInfo.phone)") { $Script:LastInjected = $null }
     Send-TransferLog "RESTORE_POS" "$($swapInfo.phone)" 0 $curLocal 0 "결제 후/대기 종료: 포스 잔액을 0으로 되돌림(서버가 원본)" ""
 }
 
@@ -994,6 +996,7 @@ public class ChampWatch {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint timeout, out IntPtr result);
+    public static bool IsVisible(long h) { return IsWindowVisible(new IntPtr(h)); }
     static string TextOf(IntPtr h) {
         StringBuilder sb = new StringBuilder(64);
         IntPtr r;
@@ -1110,7 +1113,7 @@ function Inject-ServerBalance([string]$phone) {
     Show-ResultToast "통합 포인트 $([int]$avail)원 반영`n챔프에서 [조회/확인]을 누르세요"
 }
 
-# 번호를 잘못 입력해(다른 실제 손님 번호) 반영했다가 20초 안에 다른 번호로 고쳐 입력한 경우 — 잘못 반영한 값을 되돌린다.
+# 번호를 잘못 입력해(다른 실제 손님 번호) 반영했다가, 그 입력창이 닫히기 전에 같은 창에서 다른 번호로 고쳐 입력한 경우 — 잘못 반영한 값을 되돌린다.
 # 그 손님의 결제 처리 대기 건이 있으면(실제로 결제 중) 건드리지 않는다.
 function Undo-WrongInjection([string]$phone) {
     foreach ($memNo in @($Script:SwapPending.Keys)) {
@@ -1126,6 +1129,11 @@ function Watch-ChampPhone {
     if (-not $Script:AutoInject -or $Script:TransferBusy -or $Script:WatchBusy) { return }
     $Script:WatchBusy = $true
     try {
+        # 마지막으로 반영한 손님의 입력창이 닫혔으면 그 손님은 '확정'된 것(계산대로 넘어감) — 이후 입력되는 번호는 다음 손님이다.
+        $li = $Script:LastInjected
+        if ($li -and -not $li.committed) {
+            if (-not [ChampWatch]::IsVisible([int64]$li.hwnd)) { $li.committed = $true }
+        }
         $current = @{}
         foreach ($row in [ChampWatch]::FindPhones([string[]]$Script:ChampProcNames)) {
             $f = $row.Split('|', 3)
@@ -1135,12 +1143,12 @@ function Watch-ChampPhone {
             $Script:AutoSeen[$key] = $true
             Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 전화번호 입력 감지(****$($f[2].Substring($f[2].Length - 4)), $($f[1]))"
             $prevInj = $Script:LastInjected
-            if ($prevInj -and $prevInj.phone -ne $f[2] -and ((Get-Date) - $prevInj.at).TotalSeconds -lt 20) {
+            if ($prevInj -and -not $prevInj.committed -and "$($prevInj.hwnd)" -eq "$($f[0])" -and $prevInj.phone -ne $f[2] -and ((Get-Date) - $prevInj.at).TotalSeconds -lt 120) {
                 try { Undo-WrongInjection $prevInj.phone } catch { Write-Host "자동 반영: 정정 되돌리기 오류: $_" -ForegroundColor Red }
                 $Script:LastInjected = $null
             }
             try { Inject-ServerBalance $f[2] } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 오류: $_" -ForegroundColor Red }
-            foreach ($sw in $Script:SwapPending.Values) { if ("$($sw.phone)" -eq $f[2] -and "$($sw.lastToast)" -ne "") { $Script:LastInjected = @{ phone = $f[2]; at = Get-Date }; break } }
+            foreach ($sw in $Script:SwapPending.Values) { if ("$($sw.phone)" -eq $f[2] -and "$($sw.lastToast)" -ne "") { $Script:LastInjected = @{ phone = $f[2]; hwnd = $f[0]; at = Get-Date; committed = $false }; break } }
         }
         # 화면에서 사라진 번호는 기록에서 지운다(같은 번호를 다시 입력하면 다시 반영).
         foreach ($k in @($Script:AutoSeen.Keys)) { if (-not $current.ContainsKey($k)) { $Script:AutoSeen.Remove($k); $Script:AutoReinject.Remove($k.Split('|')[1]); Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영: 입력칸에서 번호가 사라져 감시 기록을 지움($($k.Split('|')[0]))" } }
