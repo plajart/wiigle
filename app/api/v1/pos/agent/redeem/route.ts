@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
-import { posAgentRedeemLookup, posAgentRedeemApply, posAgentRedeemCancel, RedeemBusyError } from "@/lib/points";
+import { posAgentRedeemLookup, posAgentRedeemApply, posAgentRedeemCancel, posAgentRedeemRelease, RedeemBusyError } from "@/lib/points";
 import { handleApiError, requireAgentTerminal } from "@/lib/api-utils";
 
 // 사용(REDEEM) 팝업이 호출 — 전화번호로 조회(GET 성격이지만 인증 헤더 때문에 POST로 통일)한다.
 // 신규 손님이면 그 자리에서 계정을 만들고 가용 잔액(0원)을 돌려준다.
 // { action: "lookup", phone } → 팝업에 표시할 가용 잔액(에이전트가 이 값을 MEMBER.MEM_USABLE_PNT에 잠시 써넣는다)
-// { action: "apply", phone, usedAmount, cardNo, vendorTxnId } → 결제완료 트리거가 실제 사용액을 사후 차감
+// { action: "apply", phone, usedAmount, cardNo, vendorTxnId } → 결제완료 트리거가 실제 사용액을 사후 차감(잔액 부족이면 shortfall: true)
+// { action: "release", phone } → 이 포스기가 건 조회 잠금을 푼다(적립만 하고 끝났거나 조회만 하고 결제하지 않은 경우)
 export async function POST(req: Request) {
   try {
     await dbConnect();
@@ -39,6 +40,10 @@ export async function POST(req: Request) {
       if (!Number.isFinite(usedAmount) || usedAmount <= 0) return NextResponse.json({ error: "INVALID_AMOUNT" }, { status: 400 });
       const occurredAt: string | undefined = typeof body.occurredAt === "string" ? body.occurredAt : undefined;
       const result = await posAgentRedeemApply({ storeId, terminalId, phone, usedAmount, cardNo, vendorTxnId, occurredAt });
+      return NextResponse.json({ ok: true, ...result });
+    }
+    if (body.action === "release") {
+      const result = await posAgentRedeemRelease(terminalId, phone);
       return NextResponse.json({ ok: true, ...result });
     }
     if (body.action === "cancel") {

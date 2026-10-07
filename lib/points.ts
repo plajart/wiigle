@@ -1059,17 +1059,22 @@ export class RedeemBusyError extends ApiError {
   }
 }
 
+// 사용 조회 잠금 유지 시간 — TTL 인덱스(expires: 200초)는 이미 만들어진 운영 DB 에서 바꾸기 어려워서, lockedAt 을 미래 시각으로 두어
+// 실제 유지 시간을 200 + 400 = 600초로 늘린다(에이전트의 반영 유효시간 600초보다 넉넉하게). 결제 처리(apply)·release 때 바로 풀린다.
+const REDEEM_LOCK_EXTRA_MS = 400_000;
+const redeemLockTime = () => new Date(Date.now() + REDEEM_LOCK_EXTRA_MS);
+
 export async function posAgentRedeemLookup(storeId: string, terminalId: string, phone: string) {
   const user = await getOrCreateUserByPhone(phone);
   const customerId = String(user._id);
 
   try {
-    await RedeemLock.create({ userId: customerId, storeId, terminalId });
+    await RedeemLock.create({ userId: customerId, storeId, terminalId, lockedAt: redeemLockTime() });
   } catch (e) {
     if ((e as { code?: number }).code === 11000) {
       // 같은 포스기가 같은 손님을 다시 조회하는 것(전화번호를 잘못 눌렀다 다시 조회, 팝업을 닫았다 다시 열기 등)은 막지 않고
       // 잠금 시간만 갱신한다. 다른 포스기가 잡고 있을 때만 이중사용 방지를 위해 거부한다.
-      const held = await RedeemLock.findOneAndUpdate({ userId: customerId, terminalId }, { $set: { lockedAt: new Date() } });
+      const held = await RedeemLock.findOneAndUpdate({ userId: customerId, terminalId }, { $set: { lockedAt: redeemLockTime() } });
       if (!held) {
         // 다른 포스기(또는 웹 관리모드)가 이 손님을 사용 조회 중 — 어느 고객사·매장·포스기인지 알려 포스 화면 팝업에 표시한다(적립은 계속 가능).
         throw new RedeemBusyError(await redeemLockHolderInfo(customerId));
@@ -1081,6 +1086,17 @@ export async function posAgentRedeemLookup(storeId: string, terminalId: string, 
 
   const availableBalance = await getAvailableForStore(customerId, storeId);
   return { customerId, availableBalance, name: user.name };
+}
+
+/**
+ * 이 포스기가 건 사용 조회 잠금을 푼다 — 적립만 하고 계산이 끝났거나(사용 반영이 없어 apply 가 잠금을 풀지 못함) 조회만 하고 결제하지 않은 경우,
+ * 다음 손님·다른 포스기가 이 손님 때문에 막히지 않게 한다. 다른 포스기가 건 잠금은 건드리지 않는다. 없는 손님이면 아무것도 하지 않는다(계정을 만들지 않는다).
+ */
+export async function posAgentRedeemRelease(terminalId: string, phone: string) {
+  const user = await lookupCustomerByPhone(phone);
+  if (!user) return { released: false };
+  const r = await RedeemLock.deleteOne({ userId: String(user._id), terminalId });
+  return { released: r.deletedCount > 0 };
 }
 
 export type AgentRedeemInput = {
@@ -1148,7 +1164,8 @@ export async function posAgentRedeemApply(input: AgentRedeemInput) {
       note: note ?? (when.offline ? "인터넷 끊김 후 뒤늦게 서버에 반영" : undefined),
     });
     publishPointChange({ companyId, storeId, userId: customerId }, "USE");
-    return { event, breakdown, availableBalance };
+    // shortfall: 잔액이 모자라 마이너스로 강제 차감했다 — 포스에서 직원에게 알리고 본사 확인(수동 정산)을 요청한다.
+    return { event, breakdown, availableBalance, shortfall: !!note };
   } finally {
     // 성공/중복/에러 어떤 경우든 조회 시점에 걸어둔 잠금은 반드시 풀어준다(다음 손님이 막히지 않게).
     await RedeemLock.deleteOne({ userId: customerId }).catch(() => {});

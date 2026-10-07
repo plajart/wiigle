@@ -30,7 +30,7 @@ param(
     [string]$BaseUrl = "https://concrab.com",
     [string]$ConfigPath = "$PSScriptRoot\terminal-config.json",
     [int]$QueuePollSec = 3,
-    [int]$SwapTimeoutSec = 180,  # 사용 팝업으로 잠시 바꿔둔 포인트를 이 시간 안에 결제완료를 못 보면 강제로 원복
+    [int]$SwapTimeoutSec = 600,  # 사용 조회로 잠시 반영해 둔 포인트를 이 시간(서버 조회 잠금 유지시간 600초와 맞춤) 안에 결제완료를 못 보면 강제로 원복
     [switch]$Setup,    # start.bat이 지정 — 설치·등록·자동시작 확인 후 본체를 숨김 실행하고 종료
     [switch]$ShowList,  # 방금 설치·등록한 직후 이 매장의 포스기 목록을 한 번 보여준다
     [switch]$InstallRun # 설치/실행 파일(start.bat·exe)로 시작한 실행 — 최초 포인트 서버 이전을 확인한다(윈도우 부팅 자동실행에서는 하지 않는다)
@@ -388,6 +388,8 @@ function Connect-Champ([int]$attempts = 5) {
             $c = New-Object -ComObject ADODB.Connection
             $c.ConnectionTimeout = 30
             $c.Open("DSN=CHAMP")
+            # 챔프가 같은 행을 쓰는 중이어도 우리 갱신이 무한정 기다려 프로그램이 멈추지 않게 잠금 대기를 5초로 제한한다(시간이 지나면 오류로 끝나 다음 순회에 재시도). 지원되지 않으면 건너뛴다.
+            try { $c.Execute("SET TEMPORARY OPTION BLOCKING_TIMEOUT=5000") | Out-Null } catch { Write-Host "(참고) DB 잠금 대기 시간 설정을 건너뜁니다: $($_.Exception.Message)" }
             $Script:ChampLastError = $null
             return $c
         } catch {
@@ -871,6 +873,13 @@ function Restore-SwappedIfDone($memNo) {
     # 이 손님의 계산이 끝났다(결제 처리·되돌림) — 정정 대상으로 남겨 두지 않는다.
     if ($Script:LastInjected -and "$($Script:LastInjected.phone)" -eq "$($swapInfo.phone)") { $Script:LastInjected = $null }
     Send-TransferLog "RESTORE_POS" "$($swapInfo.phone)" 0 $curLocal 0 "결제 후/대기 종료: 포스 잔액을 0으로 되돌림(서버가 원본)" ""
+    # 이 손님의 사용 조회 잠금을 푼다 — 적립만 하고 끝났거나 조회만 하고 결제하지 않은 경우 다른 포스기·다음 손님이 막히지 않게(사용 반영은 서버가 이미 풀었으면 그냥 지나감).
+    try {
+        if ("$($swapInfo.phone)") {
+            Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -TimeoutSec 3 `
+                -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ action = "release"; phone = "$($swapInfo.phone)" } | ConvertTo-Json -Compress))) | Out-Null
+        }
+    } catch { Write-Host "$(Get-Date -Format 'HH:mm:ss') 조회 잠금 해제 실패(무시, 시간이 지나면 자동 해제): $_" }
 }
 
 function Restore-TimedOutSwaps {
@@ -939,6 +948,29 @@ function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
     }
 }
 
+# 결제 한 건(적립·사용)의 서버 반영 결과를 알림창 하나로 알린다. 모두 이미 반영돼 있던 건(재시도 중복)이면 알리지 않는다.
+# 잔액이 모자라 서버가 마이너스로 처리한 경우에는 직원에게 확인을 요청한다.
+function Show-PaymentResult($earnRes, $useRes) {
+    $lines = @()
+    $fresh = $false
+    $bal = $null
+    if ($earnRes) {
+        if (-not $earnRes.duplicate) { $fresh = $true }
+        if ([double]$earnRes.earnAmount -gt 0) { $lines += "적립 $([int]$earnRes.earnAmount)원" }
+        $bal = $earnRes.availableBalance
+    }
+    if ($useRes) {
+        if (-not $useRes.duplicate) { $fresh = $true }
+        $lines += "사용 $([int]$useRes.event.amount)원"
+        $bal = $useRes.availableBalance   # 사용 차감까지 반영된 최종 잔액
+    }
+    if (-not $fresh -or $lines.Count -eq 0) { return }
+    $msg = "결제 반영 완료`n" + ($lines -join " / ")
+    if ($null -ne $bal) { $msg += "`n통합 잔액 $([int]$bal)원" }
+    if ($useRes -and $useRes.shortfall) { $msg += "`n⚠ 잔액이 모자라 마이너스 처리됨 — 본사 확인 필요" }
+    Show-ResultToast $msg
+}
+
 function Process-Queue {
     if ($Script:TransferBusy) { return }  # 포인트 서버 이전 중에는 결제 큐 처리를 잠시 멈춘다(이전이 끝나면 이어서 처리)
     $rows = Champ-Query "SELECT CRAB_SEQ, MEM_NO, MEMP_AMT, MEMP_ADD_AMT, MEMP_USED_AMT, MEMP_CARD_NO, SRC_SELLS_DT, SRC_CHN_NO, CREATED_AT FROM CRAB_EVENT_QUEUE WHERE PROCESSED='N' ORDER BY CRAB_SEQ"
@@ -950,6 +982,7 @@ function Process-Queue {
         $occurredIso = $null
         try { if ($r.CREATED_AT) { $occurredIso = ([datetime]$r.CREATED_AT).ToUniversalTime().ToString("o") } } catch { }
         try {
+            $earnRes = $null; $useRes = $null
             $member = Champ-Query "SELECT MEM_TEL_1, MEM_REP_TEL FROM MEMBER WHERE MEM_NO=$(Sql-Str $memNo)"
             $phone = $null
             if ($member.Count -gt 0) { $phone = Resolve-MemberPhone $member[0].MEM_REP_TEL $member[0].MEM_TEL_1 }
@@ -978,23 +1011,25 @@ function Process-Queue {
                     $earnRes = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/earn" -Headers $AuthHeader -ContentType "application/json" -Body (@{
                         phone = $phone; addAmount = [double]$r.MEMP_ADD_AMT; saleAmount = [double]$r.MEMP_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "EARN-$vendorTxnKey"; occurredAt = $occurredIso
                     } | ConvertTo-Json)
-                    if ([double]$earnRes.earnAmount -gt 0) {
-                        Show-ResultToast "적립 완료`n$([int]$earnRes.earnAmount)원 적립`n잔액 $([int]$earnRes.availableBalance)원"
-                    }
                     # 서버 반영이 확인된 뒤에만 로컬을 소모한다(인터넷이 끊겨 위 호출이 실패하면
                     # 예외로 빠져 이 줄까지 오지 않고, 큐 행도 PROCESSED='Y'로 안 바뀌어 다음
                     # 폴링 때 재시도된다 — 오프라인 중 결제가 계속돼도 안전, 2026-09-28).
                     # 이번 처리분만큼만 차감(0으로 덮어쓰지 않음) — 그 사이 새 적립이 더 쌓였을
                     # 수 있어서다.
                     # 0 밑으로 내려가지 않게(인터넷이 끊겨 있는 동안 이미 0으로 비워 둔 경우에도 안전).
+                    # 서버가 "이미 반영된 건"(재시도로 중복)이라고 답했으면 다시 차감하지 않는다 — 사용 반영이 실패해 이 행이 여러 번 재시도되는 동안 포스 값이 계속 깎이지 않게.
                     $addAmt = [double]$r.MEMP_ADD_AMT
-                    Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $addAmt < 0 THEN 0 ELSE MEM_USABLE_PNT - $addAmt END WHERE MEM_NO=$(Sql-Str $memNo)"
+                    if (-not $earnRes.duplicate) {
+                        Champ-Exec "UPDATE MEMBER SET MEM_USABLE_PNT = CASE WHEN MEM_USABLE_PNT - $addAmt < 0 THEN 0 ELSE MEM_USABLE_PNT - $addAmt END WHERE MEM_NO=$(Sql-Str $memNo)"
+                    }
                 }
                 if ([double]$r.MEMP_USED_AMT -gt 0) {
-                    Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{
+                    $useRes = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/agent/redeem" -Headers $AuthHeader -ContentType "application/json" -Body (@{
                         action = "apply"; phone = $phone; usedAmount = [double]$r.MEMP_USED_AMT; cardNo = $r.MEMP_CARD_NO; vendorTxnId = "USE-$vendorTxnKey"; occurredAt = $occurredIso
-                    } | ConvertTo-Json) | Out-Null
+                    } | ConvertTo-Json)
                 }
+                # 사용·적립이 모두 서버에 반영된 뒤에 한 번만 알린다(사용 차감 전 잔액을 보여주거나, 일부 실패해 재시도할 때마다 알림이 반복되지 않게).
+                Show-PaymentResult $earnRes $useRes
             } else {
                 Write-Host "$(Get-Date -Format 'HH:mm:ss') MEM_NO=$memNo 전화번호 미등록 — 적립 건너뜀(보관)"
                 # 'Y'가 아니라 'S'(전화번호 없어 건너뜀)로 남겨 나중에 번호가 등록되면 사후 처리할 수 있게 한다.
@@ -1006,7 +1041,8 @@ function Process-Queue {
                 continue
             }
 
-            Restore-SwappedIfDone $memNo
+            # 적립·사용이 있는 결제 건에서만 반영 중인 값을 되돌린다 — 챔프가 0원 거래도 기록하는데(예: 고객 실적 화면 저장), 그 행이 아직 결제가 끝나지 않은 손님의 반영값을 지우면 안 된다.
+            if ([double]$r.MEMP_ADD_AMT -ne 0 -or [double]$r.MEMP_USED_AMT -ne 0) { Restore-SwappedIfDone $memNo }
             Champ-Exec "UPDATE CRAB_EVENT_QUEUE SET PROCESSED='Y' WHERE CRAB_SEQ=$($r.CRAB_SEQ)"
             # 이 회원의 포스에 남은 예전 포인트(번호가 뒤늦게 등록된 경우 등)가 있으면 이 결제 처리와 함께 서버로 옮긴다(실패해도 결제 처리에는 영향 없음 — 다음 결제·수동 이전 때 다시).
             if (-not $Script:SwapPending.ContainsKey($memNo)) { try { Reset-NegativeLocal $memNo } catch { } }

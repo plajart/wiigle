@@ -19,6 +19,7 @@ const RedeemLockSchema = new Schema<IRedeemLock>({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true },
   storeId: { type: Schema.Types.ObjectId, ref: "Store", required: true },
   terminalId: { type: Schema.Types.ObjectId, ref: "PosTerminal" },
+  // TTL 200초 인덱스는 유지하되, 포스 사용 조회 잠금은 lockedAt 을 미래 시각(+400초)으로 넣어 실제로는 600초 유지한다(lib/points.ts).
   lockedAt: { type: Date, default: Date.now, expires: 200 },
 });
 
