@@ -584,3 +584,30 @@ main:has(.shell) {
   main { padding: 24px 14px 80px; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* 본사 운영 점검 화면 보조 */
+button.link {
+  padding: 0;
+  background: none;
+  color: var(--navy);
+  text-decoration: underline;
+  font-weight: 600;
+  font-size: inherit;
+}
+.danger-text { color: var(--danger); font-weight: 600; }
+a.button {
+  display: inline-block;
+  padding: 11px 18px;
+  border-radius: var(--radius-sm);
+  background: var(--navy);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}

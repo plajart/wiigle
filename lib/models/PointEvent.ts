@@ -34,6 +34,10 @@ export interface IPointEvent {
   offline?: boolean; // 오프라인 후 뒤늦게 서버에 반영된 건
   cardNo?: string; // 결제에 쓰인 벤더 POS 회원카드 식별번호 — 소유권 매핑이 아니라 그 거래 시점의 사실만 기록(카드는 빌려 쓸 수 있어 신원 증거로 쓰지 않음)
   occurredAt: Date;
+  // 본사 운영 점검·복구에서 되돌린 건 — 원장은 지우지 않고 반대 내역(보정 건)을 추가한다. 되돌린 원본에는 reversedBy, 보정 건에는 reversalOf 가 남는다.
+  reversalOf?: Types.ObjectId;
+  reversedBy?: Types.ObjectId;
+  reversedAt?: Date;
 }
 
 const PointEventSchema = new Schema<IPointEvent>({
@@ -75,6 +79,9 @@ const PointEventSchema = new Schema<IPointEvent>({
   recordedAt: { type: Date },
   offline: { type: Boolean },
   occurredAt: { type: Date, default: Date.now },
+  reversalOf: { type: Schema.Types.ObjectId },
+  reversedBy: { type: Schema.Types.ObjectId },
+  reversedAt: { type: Date },
 });
 
 // 고객 화면(고객사별 이용내역)·고객사 운영자 고객 조회가 훑는 쿼리
@@ -99,6 +106,9 @@ PointEventSchema.index(
   { storeId: 1, clientTxnId: 1 },
   { unique: true, partialFilterExpression: { clientTxnId: { $type: "string" } } }
 );
+
+// 한 내역은 한 번만 되돌릴 수 있다 — 반대 내역(reversalOf)은 원본당 하나만 존재하게 DB 가 막는다(이중 클릭·동시 요청 방지).
+PointEventSchema.index({ reversalOf: 1 }, { unique: true, partialFilterExpression: { reversalOf: { $type: "objectId" } } });
 
 export default (models.PointEvent as mongoose.Model<IPointEvent>) ||
   model<IPointEvent>("PointEvent", PointEventSchema);

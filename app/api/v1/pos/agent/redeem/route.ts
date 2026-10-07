@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/mongodb";
 import { posAgentRedeemLookup, posAgentRedeemApply, posAgentRedeemCancel, posAgentRedeemRelease, RedeemBusyError } from "@/lib/points";
 import { handleApiError, requireAgentTerminal } from "@/lib/api-utils";
+import { getOpsSwitches } from "@/lib/ops-switches";
 
 // 사용(REDEEM) 팝업이 호출 — 전화번호로 조회(GET 성격이지만 인증 헤더 때문에 POST로 통일)한다.
 // 신규 손님이면 그 자리에서 계정을 만들고 가용 잔액(0원)을 돌려준다.
@@ -21,6 +22,8 @@ export async function POST(req: Request) {
     if (!phone) return NextResponse.json({ error: "PHONE_REQUIRED" }, { status: 400 });
 
     if (body.action === "lookup") {
+      // 본사가 운영 점검 중 포인트 사용을 일시 중지했다 — 조회(사용 준비)를 막는다. 적립·이미 끝난 결제의 반영(apply)은 계속된다.
+      if ((await getOpsSwitches()).redeemPaused) return NextResponse.json({ error: "REDEEM_PAUSED" }, { status: 423 });
       try {
         const result = await posAgentRedeemLookup(storeId, terminalId, phone);
         return NextResponse.json({ ok: true, ...result });

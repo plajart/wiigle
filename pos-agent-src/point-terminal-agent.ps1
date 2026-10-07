@@ -90,6 +90,7 @@ function Get-FriendlyError($err) {
         "WRITE_EARN_NOT_CONSENTED" { return "이 매장은 포인트 적립이 꺼져 있습니다. 매장 관리모드의 'POS 연동 동의'에서 켜주세요." }
         "STORE_HAS_NO_COMPANY" { return "매장 정보가 아직 정리되지 않았습니다. 본사에 문의해주세요." }
         "REDEEM_IN_PROGRESS_ELSEWHERE" { return "이 손님은 지금 다른 포스기에서 포인트를 사용 중입니다.`n잠시 후 다시 조회해주세요." }
+        "REDEEM_PAUSED" { return "본사가 포인트 사용을 잠시 중지했습니다. 지금은 적립만 가능합니다.`n잠시 후 다시 시도해주세요." }
         "INVALID_PHONE" { return "전화번호를 확인해주세요." }
     }
     return "일시적인 오류입니다. 잠시 후 다시 시도해주세요."
@@ -591,7 +592,11 @@ function Invoke-PointTransfer([bool]$interactive, [bool]$auto = $false) {
     if ($zeroedAlready.Count -gt 0) { $resultText += "`n`n[알림] 이미 서버로 이전된 포인트가 포스에 남아 있던 회원 $($zeroedAlready.Count)명은 서버에 다시 더하지 않고 포스 잔액만 0으로 정리했습니다." }
     if ($heldAll.Count -gt 0) {
         $heldText = ($heldAll | Select-Object -First 5 | ForEach-Object { "$($_.phone): 포스 $($_.balance) / 서버에 이전한 기록 $($_.previous)" }) -join "`n"
-        $resultText += "`n`n[경고] 이 회원 $($heldAll.Count)명은 포스 잔액이 이미 서버로 이전한 금액보다 많아 자동으로 처리하지 않았습니다(포스 잔액 그대로).`n$heldText`n매장 관리자·본사에 확인을 요청하세요."
+        $replica = @($heldAll | Where-Object { $_.kind -eq "STORE_REPLICA_SUSPECT" }).Count
+        $resultText += "`n`n[경고] 이 회원 $($heldAll.Count)명은 자동으로 처리하지 않았습니다(포스 잔액 그대로).`n"
+        if ($replica -gt 0) { $resultText += "- $($replica)명: 같은 매장의 다른 포스기가 이미 비슷한 금액을 이전해 같은 포인트가 중복될 수 있어, 본사가 확인한 뒤 처리합니다.`n" }
+        if ($heldAll.Count -gt $replica) { $resultText += "- $($heldAll.Count - $replica)명: 포스 잔액이 이미 서버로 이전한 금액보다 많습니다.`n" }
+        $resultText += "$heldText`n본사 관리모드 '운영 점검·복구'에서 확인·처리한 뒤, 이 프로그램의 '포인트 서버로 이전'을 다시 실행하면 포스 잔액이 정리됩니다."
         Send-TransferLog "REJECTED" "" 0 $null $null "이전 보류(이전 기록보다 포스 잔액이 많음) $($heldAll.Count)명" ""
     }
     if ($failed -gt 0) { $resultText += "`n`n일부 묶음이 실패했습니다. 인터넷 연결을 확인하고 다시 실행하면 이어서 처리됩니다." }
@@ -635,6 +640,10 @@ function Set-AgentError([string]$msg) {
     try { Send-Heartbeat | Out-Null } catch { }
 }
 
+# 본사 긴급 스위치(하트비트 응답으로 갱신) — 자동 반영 허용 여부, 포인트 사용 일시 중지 여부.
+$Script:AutoInjectAllowed = $true
+$Script:RedeemPaused = $false
+
 function Send-Heartbeat {
     try {
         $pending = 0
@@ -642,9 +651,13 @@ function Send-Heartbeat {
         $localVer = $null
         try { $localVer = Get-LocalAgentVersion } catch { }
         $report = $Script:UpdateReport; $Script:UpdateReport = $null
-        $status = @{ agentVersion = $localVer; caps = @("update"); updateStatus = $(if ($report) { $report.status } else { $null }); updateError = $(if ($report) { $report.error } else { $null }); pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt }
+        $status = @{ agentVersion = $localVer; caps = @("update"); updateStatus = $(if ($report) { $report.status } else { $null }); updateError = $(if ($report) { $report.error } else { $null }); pending = $pending; skippedNoPhone = $Script:SkippedNoPhone; lastError = $(if ($Script:RetryError) { $Script:RetryError } else { $Script:LastError }); lastErrorAt = $Script:LastErrorAt; autoInject = [bool]$Script:AutoInject; swapPending = $(if ($Script:SwapPending) { $Script:SwapPending.Count } else { 0 }) }
         $res = Invoke-RestMethod -Method Post -Uri "$($cfg.baseUrl)/api/v1/pos/terminals/heartbeat" -Headers $AuthHeader -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes(($status | ConvertTo-Json -Compress)))
         $Script:IsPrimary = [bool]$res.isPrimary
+        # 본사 긴급 스위치 — 자동 반영 허용 여부, 포인트 사용 일시 중지 여부(응답에 없으면 기존 값 유지).
+        if ($null -ne $res.autoInjectAllowed) { $Script:AutoInjectAllowed = [bool]$res.autoInjectAllowed }
+        if ($null -ne $res.redeemPaused) { $Script:RedeemPaused = [bool]$res.redeemPaused }
+        try { if ($itemAuto) { $itemAuto.Text = "고객 조회 시 통합포인트 자동 반영 (시험)" + $(if (-not $Script:AutoInjectAllowed) { " — 본사가 중지함" } else { "" }) } } catch { }
         if ($res.storeName -and ($res.storeName -ne $cfg.storeName -or $res.companyName -ne $cfg.companyName)) {
             # 이 포스기가 다른 매장으로 옮겨졌다 — 화면 표시를 맞추고 설정에 저장한다.
             $cfg.storeName = $res.storeName; $cfg.companyName = $res.companyName
@@ -746,7 +759,9 @@ function Show-RedeemPopup {
             try { $eb = $lookupErr.ErrorDetails.Message | ConvertFrom-Json; $lookupCode = $eb.error; $lookupHolder = $eb.holder } catch { }
             $lookupStatus = 0
             try { $lookupStatus = [int]$lookupErr.Exception.Response.StatusCode } catch { }
-            if ($lookupCode -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
+            if ($lookupCode -eq "REDEEM_PAUSED") {
+                $lblResult.Text = "본사가 포인트 사용을 잠시 중지했습니다.`n지금은 적립만 가능합니다. 잠시 후 다시 조회해주세요."
+            } elseif ($lookupCode -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
                 # 같은 손님을 다른 포스기에서 사용 조회 중 — 어디서 쓰는 중인지 보여주고, 이번에는 적립만 가능하다고 안내한다(적립은 그대로 진행됨).
                 $where = ""
                 if ($lookupHolder) { $where = "$($lookupHolder.companyName) / $($lookupHolder.storeName) ($($lookupHolder.terminalName))" }
@@ -933,7 +948,8 @@ function Move-LeftoverToServer($memNo, [string]$phone, $cardNo) {
         if (-not $Script:HeldWarned.ContainsKey("$memNo")) {
             $Script:HeldWarned["$memNo"] = $true
             Send-TransferLog "REJECTED" $phone $bal $null $null "이전 보류: 포스 잔액 $bal 이 서버 이전 기록 $($heldNow[0].previous) 보다 많음" ""
-            [System.Windows.Forms.MessageBox]::Show("이 손님($phone)의 포스 포인트 $bal 이(가) 이미 서버로 이전한 금액($($heldNow[0].previous))보다 많아 자동으로 처리하지 않았습니다.`n`n서버 포인트가 중복되거나 틀어질 수 있으니 매장 관리자·본사에 확인을 요청해주세요.", "포인트 관리 프로그램 - 확인 필요", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            $heldWhy = if ($heldNow[0].kind -eq "STORE_REPLICA_SUSPECT") { "같은 매장의 다른 포스기가 이미 비슷한 금액($($heldNow[0].previous))을 이전해 같은 포인트가 중복될 수 있어" } else { "이미 서버로 이전한 금액($($heldNow[0].previous))보다 많아" }
+            [System.Windows.Forms.MessageBox]::Show("이 손님($phone)의 포스 포인트 $bal 이(가) $heldWhy 자동으로 처리하지 않았습니다.`n`n본사 관리모드 '운영 점검·복구'에서 확인한 뒤 처리됩니다. 매장 관리자·본사에 알려주세요.", "포인트 관리 프로그램 - 확인 필요", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         }
         return
     }
@@ -1178,7 +1194,10 @@ function Inject-ServerBalance([string]$phone) {
         $status = 0
         try { $status = [int]$e.Exception.Response.StatusCode } catch { }
         Write-Host "$(Get-Date -Format 'HH:mm:ss') 자동 반영 조회 실패(****$tail): $e"
-        if ($code -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
+        if ($code -eq "REDEEM_PAUSED") {
+            $Script:RedeemPaused = $true
+            Show-ResultToast "본사가 포인트 사용을 잠시 중지함`n지금은 적립만 가능"
+        } elseif ($code -eq "REDEEM_IN_PROGRESS_ELSEWHERE") {
             $where = ""; if ($holder) { $where = "$($holder.storeName) ($($holder.terminalName))" }
             Show-ResultToast "다른 곳에서 포인트 사용 중`n$where`n지금은 적립만 가능"
         } elseif ($status -eq 0) {
@@ -1228,7 +1247,7 @@ function Undo-WrongInjection([string]$phone) {
 }
 
 function Watch-ChampPhone {
-    if (-not $Script:AutoInject -or $Script:TransferBusy -or $Script:WatchBusy) { return }
+    if (-not $Script:AutoInject -or -not $Script:AutoInjectAllowed -or $Script:RedeemPaused -or $Script:TransferBusy -or $Script:WatchBusy) { return }
     $Script:WatchBusy = $true
     try {
         # 마지막으로 반영한 손님의 입력창이 닫혔으면 그 손님은 '확정'된 것(계산대로 넘어감) — 이후 입력되는 번호는 다음 손님이다.

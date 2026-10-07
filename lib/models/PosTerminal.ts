@@ -12,7 +12,7 @@ export interface IPosTerminal {
   agentVersion?: string; // 포스기가 하트비트로 알려준 설치된 프로그램 버전
   agentCaps?: string[]; // 프로그램이 지원하는 기능(예: "update" = 서버 지시 자동 업데이트)
   agentUpdate?: { rolloutId: Types.ObjectId; status: "PENDING" | "UPDATING" | "DONE" | "FAILED" | "MANUAL"; order: number; startedAt?: Date; finishedAt?: Date; skipUntil?: Date; error?: string };
-  agentStatus?: { pending: number; skippedNoPhone: number; lastError?: string | null; lastErrorAt?: Date | null; reportedAt: Date };
+  agentStatus?: { pending: number; skippedNoPhone: number; lastError?: string | null; lastErrorAt?: Date | null; autoInject?: boolean; swapPending?: number; reportedAt: Date };
   isPrimary: boolean; // 매장 내 "대표 포스기" — 이 단말에서만 관리모드 바로가기를 노출. 매장당 1대만 true(지정 시 나머지는 자동 해제)
 }
 

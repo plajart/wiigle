@@ -14,10 +14,14 @@
 #        -Mode MemTables  → 고객번호·카드번호·전화 컬럼이 있는 테이블 목록과 행수(champ-survey-memtables.txt)
 #        -Mode CountAll -Label x1 → 전체 테이블 행수(champ-survey-x1.txt). 계산대에서 [고객을 판매 건에 붙이기 직전]에 한 번,
 #        [붙인 직후(결제 전)]에 -Label x2 로 한 번 더 실행한 뒤 -Mode Diff -Label x1 -Label2 x2 로 늘어난 테이블을 확인한다.
+#   2-3) 포스기끼리 DB 가 복제돼 있는지 확인(다점포 도입 전):
+#        -Mode Balances → 이 포스의 포인트 잔액(MEM_USABLE_PNT) 요약과 지문(해시)을 champ-survey-balances.txt 에 저장한다(전화번호는 뒤 4자리만).
+#        같은 매장의 여러 포스기에서 실행해 "지문"이 같으면 DB 가 복제돼 같은 포인트를 각 포스기가 따로 보내게 된다(한 대만 이전해야 함).
+#        지문이 다르면 포스기마다 따로 쌓인 포인트라 각각 이전한다. 읽기 전용.
 #   3) 같은 방식으로 포인트 사용 결제 전/후 스냅샷(-Label pay-before / pay-after)을 비교하면 결제가 바꾸는 값을 알 수 있다.
 # 결과는 이 스크립트가 있는 폴더의 champ-survey-<종류>.txt 에 저장된다(전화번호는 그대로 들어가니 외부에 올리지 말 것).
 param(
-    [ValidateSet("Catalog", "Snapshot", "Diff", "MemTables", "CountAll")][string]$Mode = "Catalog",
+    [ValidateSet("Catalog", "Snapshot", "Diff", "MemTables", "CountAll", "Balances")][string]$Mode = "Catalog",
     [string]$MemNo = "",
     [string]$Label = "snap",
     [string]$Label2 = "snap2"
@@ -81,7 +85,32 @@ $conn = Open-Champ
 $all = New-Object System.Collections.Generic.List[string]
 $all.Add("챔프 조사 ($Mode) — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') — $env:COMPUTERNAME")
 
-if ($Mode -eq "MemTables") {
+if ($Mode -eq "Balances") {
+    $rs = $conn.Execute("SELECT MEM_NO, MEM_REP_TEL, MEM_TEL_1, MEM_USABLE_PNT FROM MEMBER WHERE MEM_USABLE_PNT <> 0")
+    $byPhone = @{}
+    $noPhone = 0; $noPhoneSum = 0.0
+    while (-not $rs.EOF) {
+        $bal = [double]$rs.Fields.Item("MEM_USABLE_PNT").Value
+        $ph = $null
+        foreach ($cand in @($rs.Fields.Item("MEM_REP_TEL").Value, $rs.Fields.Item("MEM_TEL_1").Value)) {
+            if ($cand) { $d = ("$cand" -replace '[^0-9]', ''); if ($d.Length -ge 9) { $ph = $d; break } }
+        }
+        if ($ph) { if ($byPhone.ContainsKey($ph)) { $byPhone[$ph] += $bal } else { $byPhone[$ph] = $bal } } else { $noPhone++; $noPhoneSum += $bal }
+        $rs.MoveNext()
+    }
+    $rs.Close()
+    $lines2 = @($byPhone.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name):$([math]::Round($_.Value, 2))" })
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $hash = ([System.BitConverter]::ToString($md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($lines2 -join "`n")))) -replace '-', '').ToLower()
+    $pos = @($byPhone.Values | Where-Object { $_ -gt 0 }); $neg = @($byPhone.Values | Where-Object { $_ -lt 0 })
+    $all.Add("전화번호가 있는 회원: $($byPhone.Count)명, 잔액 합계 $([math]::Round(($byPhone.Values | Measure-Object -Sum).Sum, 2))")
+    $all.Add("  양수 잔액 $($pos.Count)명(합계 $([math]::Round(($pos | Measure-Object -Sum).Sum, 2))), 음수 잔액 $($neg.Count)명")
+    $all.Add("전화번호 없는 회원(이전 대상 아님): $noPhone 명, 잔액 합계 $([math]::Round($noPhoneSum, 2))")
+    $all.Add("지문(복제 확인용, 같은 매장 포스기끼리 비교): $hash")
+    $all.Add("예시(전화번호 뒤 4자리):")
+    foreach ($l in ($lines2 | Select-Object -First 10)) { $k = $l.Split(':'); $all.Add("  ****$($k[0].Substring($k[0].Length - 4)) : $($k[1])") }
+    $out = Join-Path $dir "champ-survey-balances.txt"
+} elseif ($Mode -eq "MemTables") {
     $all.AddRange([string[]](Section "고객번호·카드번호·전화 컬럼이 있는 테이블(MEMBER·MEMBER_POINT 제외)" $conn "SELECT t.table_name, c.column_name, c.width FROM SYSCOLUMN c JOIN SYSTABLE t ON t.table_id=c.table_id WHERE t.table_type='BASE' AND (c.column_name LIKE '%MEM_NO%' OR c.column_name LIKE '%MEM_CARD%' OR c.column_name LIKE '%CARD_NO%' OR c.column_name LIKE '%MEM_REP_TEL%' OR c.column_name LIKE '%MEM_NM%') AND t.table_name NOT IN ('MEMBER','MEMBER_POINT') ORDER BY t.table_name, c.column_name"))
     $out = Join-Path $dir "champ-survey-memtables.txt"
 } elseif ($Mode -eq "CountAll") {

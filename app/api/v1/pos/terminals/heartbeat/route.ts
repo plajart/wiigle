@@ -6,6 +6,7 @@ import Company from "@/lib/models/Company";
 import { getAgentBundle } from "@/lib/agent-bundle";
 import { rolloutDecision, type HeartbeatUpdateReport } from "@/lib/agent-rollout";
 import { handleApiError } from "@/lib/api-utils";
+import { getOpsSwitches } from "@/lib/ops-switches";
 
 // POS 단말 프로그램이 주기적으로(예: 1분마다) 호출 — "지금 이 순간 살아있다"는 신호.
 // 인증: Authorization: Bearer <apiKey> (register 시 발급받은 값)
@@ -31,6 +32,8 @@ export async function POST(req: Request) {
         skippedNoPhone: n(body.skippedNoPhone),
         lastError: body.lastError ? String(body.lastError).slice(0, 300) : null,
         lastErrorAt: lastErrorAt && !isNaN(lastErrorAt.getTime()) ? lastErrorAt : null,
+        autoInject: body.autoInject === true, // 이 포스기에서 "고객 조회 시 통합포인트 자동 반영"이 켜져 있는가
+        swapPending: n(body.swapPending), // 지금 포스 화면에 서버 포인트를 반영해 둔 손님 수(결제·시간 초과로 정리되면 0)
         reportedAt: new Date(),
       };
       terminal.markModified("agentStatus");
@@ -68,7 +71,13 @@ export async function POST(req: Request) {
     } catch {
       // 버전 확인 실패는 하트비트를 막지 않는다
     }
-    return NextResponse.json({ ok: true, terminalName: terminal.name, storeId: String(terminal.storeId), storeName: store?.name ?? null, companyName: company?.name ?? null, agentVersion, updateNow: decision.updateNow, updateTarget: decision.targetVersion, initialTransferDone: !!terminal.initialTransferAt, isPrimary: terminal.isPrimary === true, storeUrl: `${process.env.APP_BASE_URL || "https://concrab.com"}/store` });
+    let switches = { autoInjectAllowed: true, redeemPaused: false };
+    try {
+      switches = await getOpsSwitches();
+    } catch {
+      // 스위치 조회 실패는 하트비트를 막지 않는다(기본값 유지)
+    }
+    return NextResponse.json({ ok: true, autoInjectAllowed: switches.autoInjectAllowed, redeemPaused: switches.redeemPaused, terminalName: terminal.name, storeId: String(terminal.storeId), storeName: store?.name ?? null, companyName: company?.name ?? null, agentVersion, updateNow: decision.updateNow, updateTarget: decision.targetVersion, initialTransferDone: !!terminal.initialTransferAt, isPrimary: terminal.isPrimary === true, storeUrl: `${process.env.APP_BASE_URL || "https://concrab.com"}/store` });
   } catch (e) {
     return handleApiError(e);
   }

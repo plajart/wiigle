@@ -8,6 +8,7 @@ import Company from "./models/Company";
 import User from "./models/User";
 import VendorImportRecord from "./models/VendorImportRecord";
 import RedeemLock from "./models/RedeemLock";
+import ImportHold from "./models/ImportHold";
 import PosTransferLog, { type PosTransferKind } from "./models/PosTransferLog";
 import PosTerminal from "./models/PosTerminal";
 import { publishPointChange } from "./realtime";
@@ -910,18 +911,61 @@ export type BulkImportResult = {
   // alreadyApplied: 포스 잔액이 이전 기록 이하 — 이미 서버에 있는 포인트라 포스 쪽을 0으로 정리하면 된다.
   // held: 포스 잔액이 이전 기록보다 많음 — 어디서 늘었는지 알 수 없어 자동 처리하지 않고 사람이 확인해야 한다(포스 잔액은 그대로 둔다).
   alreadyApplied?: { phone: string; balance: number }[];
-  held?: { phone: string; balance: number; previous: number }[];
+  held?: { phone: string; balance: number; previous: number; kind?: "MORE_THAN_IMPORTED" | "STORE_REPLICA_SUSPECT" }[];
 };
 
-/** 이 포스기에서 이 고객에 대해 이미 서버로 이전한 포인트 합계(이전 내역과 옛 이전 기록 중 큰 값). */
+/** 이 포스기에서 이 고객에 대해 이미 서버로 이전한 포인트 합계(이전 내역·옛 이전 기록·본사가 기각한 보류 건 중 큰 값). */
 async function previousImportedFromTerminal(terminalId: string, userId: string): Promise<number> {
-  const [events, records] = await Promise.all([
+  const [events, records, dismissed] = await Promise.all([
     PointEvent.find({ terminalId, userId, type: "VENDOR_IMPORT" }).select("amount").lean(),
     VendorImportRecord.find({ terminalId, userId }).select("amount").lean(),
+    // 본사가 "더하지 않음"으로 기각한 보류 건 — 그 포스 잔액은 이미 처리된 것으로 본다(포스 프로그램이 포스 잔액만 0으로 정리).
+    ImportHold.find({ terminalId, userId, status: "DISMISSED" }).select("balance").lean(),
   ]);
   const fromEvents = events.reduce((s, e) => s + (e.amount || 0), 0);
   const fromRecords = records.reduce((s, r) => s + (r.amount || 0), 0);
-  return Math.max(fromEvents, fromRecords);
+  const fromDismissed = dismissed.reduce((m, h) => Math.max(m, h.balance || 0), 0);
+  return Math.max(fromEvents, fromRecords, fromDismissed);
+}
+
+/** 같은 매장의 다른 포스기들이 이 고객에 대해 이미 서버로 이전한 포인트 중 가장 큰 합계(포스기별 합계의 최댓값). */
+async function otherTerminalsImportedMax(storeId: string, terminalId: string, userId: string): Promise<number> {
+  const [events, records] = await Promise.all([
+    PointEvent.find({ storeId, userId, type: "VENDOR_IMPORT", terminalId: { $ne: terminalId } }).select("terminalId amount").lean(),
+    VendorImportRecord.find({ storeId, userId, terminalId: { $ne: terminalId } }).select("terminalId amount").lean(),
+  ]);
+  const perTerminal = new Map<string, { ev: number; rec: number }>();
+  for (const e of events) {
+    const k = String(e.terminalId);
+    const cur = perTerminal.get(k) ?? { ev: 0, rec: 0 };
+    cur.ev += e.amount || 0;
+    perTerminal.set(k, cur);
+  }
+  for (const r of records) {
+    const k = String(r.terminalId);
+    const cur = perTerminal.get(k) ?? { ev: 0, rec: 0 };
+    cur.rec += r.amount || 0;
+    perTerminal.set(k, cur);
+  }
+  let max = 0;
+  for (const v of perTerminal.values()) max = Math.max(max, v.ev, v.rec);
+  return max;
+}
+
+/** 보류 건을 남긴다 — 같은 포스기·고객·잔액의 열린 건이 이미 있으면 새로 만들지 않고 확인 시각만 갱신한다. */
+async function recordImportHold(input: {
+  storeId: string; companyId: string; terminalId: string; userId: string; phone: string; kind: "MORE_THAN_IMPORTED" | "STORE_REPLICA_SUSPECT";
+  balance: number; amount: number; previous: number; batchId?: string;
+}) {
+  try {
+    await ImportHold.findOneAndUpdate(
+      { terminalId: input.terminalId, userId: input.userId, status: "OPEN", balance: input.balance },
+      { $set: { lastSeenAt: new Date() }, $setOnInsert: { ...input, status: "OPEN", createdAt: new Date() } },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error("[import-hold] 보류 건 기록 실패", e); // 기록 실패가 이전 처리를 막지 않는다(감사로그에는 남음)
+  }
 }
 
 export async function bulkImportLegacyBalances(
@@ -952,7 +996,7 @@ export async function bulkImportLegacyBalances(
   let alreadyLinked = 0;
   let totalAmount = 0;
   const alreadyApplied: { phone: string; balance: number }[] = [];
-  const held: { phone: string; balance: number; previous: number }[] = [];
+  const held: { phone: string; balance: number; previous: number; kind?: "MORE_THAN_IMPORTED" | "STORE_REPLICA_SUSPECT" }[] = [];
 
   for (const [phone, { balance, cardNo }] of byPhone) {
     const user = await getOrCreateUserByPhone(phone);
@@ -966,7 +1010,10 @@ export async function bulkImportLegacyBalances(
       const sameBatch = batchId ? await PointEvent.exists({ storeId, vendorTxnId: `IMPORT-${terminalId}-${batchId}-${phone}-${balance}` }) : null;
       if (!sameBatch) {
         if (balance <= prevImported + 0.5) alreadyApplied.push({ phone, balance });
-        else held.push({ phone, balance, previous: prevImported });
+        else {
+          held.push({ phone, balance, previous: prevImported, kind: "MORE_THAN_IMPORTED" });
+          await recordImportHold({ storeId, companyId, terminalId, userId: customerId, phone, kind: "MORE_THAN_IMPORTED", balance, amount: Math.round((balance - prevImported) * 100) / 100, previous: prevImported, batchId });
+        }
         alreadyLinked++;
         await AuditLog.create({
           storeId,
@@ -974,6 +1021,25 @@ export async function bulkImportLegacyBalances(
           actorId: terminalId,
           action: balance <= prevImported + 0.5 ? "IMPORT_SKIPPED_ALREADY_IMPORTED" : "IMPORT_HELD_REVIEW",
           meta: { customerId, phone, balance, previousImported: prevImported, batchId },
+        });
+        continue;
+      }
+    }
+    // 같은 매장의 다른 포스기가 이미 이 고객의 포인트를 이전했고 이번 포스기의 잔액이 거의 같다면, 포스기들의 DB 가 서로 복제돼 같은 포인트를
+    // 각 포스기가 따로 보내는 것일 수 있다 — 그대로 더하면 포스기 수만큼 부풀어 오르므로 자동으로 더하지 않고 본사가 확인하게 한다.
+    // (포스기마다 로컬 DB 가 따로라 잔액이 서로 다른 경우는 이 조건에 걸리지 않고 정상으로 합산된다.)
+    if (prevImported === 0) {
+      const otherMax = await otherTerminalsImportedMax(storeId, terminalId, customerId);
+      if (otherMax > 0 && Math.abs(balance - otherMax) <= Math.max(1, otherMax * 0.02)) {
+        held.push({ phone, balance, previous: otherMax, kind: "STORE_REPLICA_SUSPECT" });
+        alreadyLinked++;
+        await recordImportHold({ storeId, companyId, terminalId, userId: customerId, phone, kind: "STORE_REPLICA_SUSPECT", balance, amount: balance, previous: otherMax, batchId });
+        await AuditLog.create({
+          storeId,
+          actorType: "AGENT",
+          actorId: terminalId,
+          action: "IMPORT_HELD_REVIEW",
+          meta: { customerId, phone, balance, otherTerminalImported: otherMax, batchId, kind: "STORE_REPLICA_SUSPECT" },
         });
         continue;
       }
